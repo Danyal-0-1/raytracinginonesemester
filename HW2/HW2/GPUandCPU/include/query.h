@@ -4,6 +4,7 @@
 #include "ray.h"
 #include "MeshOBJ.h"
 #include "brdf.h"
+#include "environment.h"
 #include "shader.h"
 #include "bvh.h"
 #include "antialias.h"
@@ -15,6 +16,7 @@ void render(
     int W, int H,
     const Camera cam,
     const Vec3 missColor,
+    const Environment env,
     const int max_depth,
     const int spp,
     const BVHNode* __restrict__ nodes,
@@ -157,6 +159,7 @@ HYBRID_FUNC inline Vec3 TraceRayIterative(
     const Ray& primaryRay,
     const int maxDepth,
     const Vec3 missColor,
+    const Environment env,
     const int numTriangles,
     const BVHNode* __restrict__ nodes,
     const AABB* __restrict__ aabbs,
@@ -179,7 +182,11 @@ HYBRID_FUNC inline Vec3 TraceRayIterative(
         HitRecord hitRecord;
         SearchBVH(numTriangles, ray, nodes, aabbs, triangles, hitRecord);
         if (!hitRecord.hit) {
-            radiance = radiance + throughput * missColor;
+            Vec3 miss = missColor;
+            if (env.enabled) {
+                miss = EvaluateSunSky(ray.direction(), env);
+            }
+            radiance = radiance + throughput * miss;
             break;
         }
 

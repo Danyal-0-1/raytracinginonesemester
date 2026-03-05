@@ -11,6 +11,7 @@
 #include "vec3.h"
 #include "camera.h"
 #include "material.h"
+#include "environment.h"
 
 struct SceneSettings {
     int max_depth = 1;
@@ -38,6 +39,7 @@ struct Scene {
     SceneSettings settings;
     Camera camera;
     Vec3 miss_color = make_vec3(0.0f, 0.0f, 0.0f);
+    Environment environment;
     std::vector<Light> lights;
     std::vector<SceneObject> objects;
 };
@@ -239,6 +241,49 @@ inline bool json_as_vec3(const JsonValue& v, Vec3& out) {
     return true;
 }
 
+inline std::string to_lower_ascii(std::string s) {
+    for (char& c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return s;
+}
+
+inline EnvironmentPreset preset_from_string(const std::string& preset_str) {
+    const std::string v = to_lower_ascii(preset_str);
+    if (v == "custom") return EnvironmentPreset::Custom;
+    if (v == "sunrise" || v == "morning") return EnvironmentPreset::Sunrise;
+    if (v == "midday" || v == "noon") return EnvironmentPreset::Midday;
+    if (v == "sunset" || v == "evening") return EnvironmentPreset::Sunset;
+    if (v == "night" || v == "night_moon" || v == "moonlight") return EnvironmentPreset::NightMoon;
+    if (v == "night_nomoon" || v == "starlight") return EnvironmentPreset::NightNoMoon;
+    return EnvironmentPreset::Custom;
+}
+
+inline bool parse_clock_hhmm(const std::string& time_str, float& hour_out) {
+    if (time_str.size() < 4) return false;
+    size_t colon = time_str.find(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= time_str.size()) return false;
+    const std::string h = time_str.substr(0, colon);
+    const std::string m = time_str.substr(colon + 1);
+    const int hour = std::atoi(h.c_str());
+    const int minute = std::atoi(m.c_str());
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return false;
+    hour_out = static_cast<float>(hour) + static_cast<float>(minute) / 60.0f;
+    return true;
+}
+
+inline bool is_tempe_az(const std::string& location) {
+    const std::string v = to_lower_ascii(location);
+    return v.find("tempe") != std::string::npos && v.find("az") != std::string::npos;
+}
+
+inline EnvironmentPreset tempe_preset_from_time(float hour_local) {
+    if (hour_local >= 5.0f && hour_local < 10.0f) return EnvironmentPreset::Sunrise;
+    if (hour_local >= 10.0f && hour_local < 16.0f) return EnvironmentPreset::Midday;
+    if (hour_local >= 16.0f && hour_local < 21.0f) return EnvironmentPreset::Sunset;
+    return EnvironmentPreset::NightMoon;
+}
+
 inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
     if (root.type != JsonValue::Type::Object) {
         if (err) *err = "Root is not an object";
@@ -269,6 +314,117 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
     const JsonValue* miss_color = nullptr;
     if (json_get(root, "miss_color", &miss_color)) {
         json_as_vec3(*miss_color, scene.miss_color);
+    }
+
+    scene.environment = Environment();
+    const JsonValue* environment = nullptr;
+    if (json_get(root, "environment", &environment) && environment->type == JsonValue::Type::Object) {
+        Environment env = scene.environment;
+        const JsonValue* v = nullptr;
+
+        if (json_get(*environment, "enabled", &v) && v->type == JsonValue::Type::Bool) {
+            env.enabled = v->b;
+        }
+
+        bool has_preset = false;
+        if (json_get(*environment, "preset", &v) && v->type == JsonValue::Type::String) {
+            const EnvironmentPreset preset = preset_from_string(v->str);
+            ApplyEnvironmentPreset(env, preset);
+            has_preset = true;
+        }
+
+        std::string location_str;
+        std::string time_str;
+        if (json_get(*environment, "location", &v) && v->type == JsonValue::Type::String) {
+            location_str = v->str;
+        }
+        if (json_get(*environment, "time", &v) && v->type == JsonValue::Type::String) {
+            time_str = v->str;
+        }
+
+        // Tempe, AZ heuristic when preset is omitted.
+        if (!has_preset && !location_str.empty() && !time_str.empty() && is_tempe_az(location_str)) {
+            float hour = 0.0f;
+            if (parse_clock_hhmm(time_str, hour)) {
+                ApplyEnvironmentPreset(env, tempe_preset_from_time(hour));
+            }
+        }
+
+        const JsonValue* sun_elev = nullptr;
+        const JsonValue* sun_azim = nullptr;
+        if (json_get(*environment, "sun_elevation_deg", &sun_elev) &&
+            json_get(*environment, "sun_azimuth_deg", &sun_azim) &&
+            sun_elev->type == JsonValue::Type::Number &&
+            sun_azim->type == JsonValue::Type::Number) {
+            env.sun_dir = DirectionFromElevationAzimuthDeg(
+                static_cast<float>(sun_elev->num),
+                static_cast<float>(sun_azim->num));
+            env.preset = EnvironmentPreset::Custom;
+        }
+
+        const JsonValue* moon_elev = nullptr;
+        const JsonValue* moon_azim = nullptr;
+        if (json_get(*environment, "moon_elevation_deg", &moon_elev) &&
+            json_get(*environment, "moon_azimuth_deg", &moon_azim) &&
+            moon_elev->type == JsonValue::Type::Number &&
+            moon_azim->type == JsonValue::Type::Number) {
+            env.moon_dir = DirectionFromElevationAzimuthDeg(
+                static_cast<float>(moon_elev->num),
+                static_cast<float>(moon_azim->num));
+        }
+
+        if (json_get(*environment, "sun_intensity", &v) && v->type == JsonValue::Type::Number) {
+            env.sun_intensity = static_cast<float>(v->num);
+        }
+        if (json_get(*environment, "sky_intensity", &v) && v->type == JsonValue::Type::Number) {
+            env.sky_intensity = static_cast<float>(v->num);
+        }
+        if (json_get(*environment, "turbidity", &v) && v->type == JsonValue::Type::Number) {
+            env.turbidity = static_cast<float>(v->num);
+        }
+        if (json_get(*environment, "moon_intensity", &v) && v->type == JsonValue::Type::Number) {
+            env.moon_intensity = static_cast<float>(v->num);
+            if (env.moon_intensity <= 0.0f) env.moon_enabled = false;
+        }
+        if (json_get(*environment, "moon_enabled", &v) && v->type == JsonValue::Type::Bool) {
+            env.moon_enabled = v->b;
+            if (!env.moon_enabled) env.moon_intensity = 0.0f;
+        }
+        if (json_get(*environment, "star_intensity", &v) && v->type == JsonValue::Type::Number) {
+            env.star_intensity = static_cast<float>(v->num);
+        }
+        if (json_get(*environment, "star_density", &v) && v->type == JsonValue::Type::Number) {
+            env.star_density = static_cast<float>(v->num);
+        }
+        if (json_get(*environment, "star_threshold", &v) && v->type == JsonValue::Type::Number) {
+            env.star_threshold = static_cast<float>(v->num);
+        }
+        if (json_get(*environment, "exposure", &v) && v->type == JsonValue::Type::Number) {
+            env.exposure = static_cast<float>(v->num);
+        }
+        if (json_get(*environment, "sun_tint", &v)) {
+            json_as_vec3(*v, env.sun_tint);
+        }
+        if (json_get(*environment, "horizon_tint", &v)) {
+            json_as_vec3(*v, env.horizon_tint);
+        }
+        if (json_get(*environment, "tint", &v)) {
+            json_as_vec3(*v, env.tint);
+        }
+        if (json_get(*environment, "sky_tint", &v)) {
+            json_as_vec3(*v, env.tint);
+        }
+        if (json_get(*environment, "warm_scatter", &v) && v->type == JsonValue::Type::Number) {
+            env.warm_scatter = static_cast<float>(v->num);
+        }
+        if (json_get(*environment, "ground_color", &v)) {
+            json_as_vec3(*v, env.ground_color);
+        }
+        if (json_get(*environment, "ground_intensity", &v) && v->type == JsonValue::Type::Number) {
+            env.ground_intensity = static_cast<float>(v->num);
+        }
+
+        scene.environment = env;
     }
 
     const JsonValue* camera = nullptr;

@@ -26,8 +26,12 @@ inline std::vector<SampleOffset<float>> jittered_samples(int samples_per_pixel,
     return offsets;
 }
 
-// ---- Device-side Wang hash for sub-pixel jitter ----
+// ---- Wang hash for sub-pixel jitter ----
+#ifdef __CUDACC__
 __device__ inline float wang_hash_float(unsigned int seed) {
+#else
+inline float wang_hash_float(unsigned int seed) {
+#endif
     seed = (seed ^ 61u) ^ (seed >> 16u);
     seed *= 9u;
     seed ^= seed >> 4u;

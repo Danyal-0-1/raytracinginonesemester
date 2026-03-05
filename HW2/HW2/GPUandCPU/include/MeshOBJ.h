@@ -270,6 +270,7 @@ inline bool LoadOBJ_ToMesh(const std::string& path, Mesh& outMesh, int& nextObje
 
     bool fileHasUV = false;
     bool fileHasNrm = false;
+    bool sawLineElement = false;
 
     std::unordered_map<VertexKey, uint32_t, VertexKeyHash> dedup;
     dedup.reserve(10000);
@@ -410,10 +411,45 @@ inline bool LoadOBJ_ToMesh(const std::string& path, Mesh& outMesh, int& nextObje
             continue;
         }
 
+        // l i j [k ...]
+        // This loader is triangle-based; we record that line primitives exist and
+        // provide a small fallback mesh later if no faces are present.
+        if (s[0] == 'l' && (s[1] == ' ' || s[1] == '\t'))
+        {
+            sawLineElement = true;
+            continue;
+        }
+
         // ignore other lines (mtllib, usemtl, etc.)
     }
 
     std::fclose(f);
+
+    // Fallback for wireframe-only OBJ files (e.g. BVH line visualizations):
+    // build a simple cube from the first 8 vertices so the asset is still renderable.
+    if (outMesh.indices.empty() && sawLineElement && rawPos.size() >= 8) {
+        outMesh.positions.clear();
+        outMesh.indices.clear();
+        outMesh.triangleObjIds.clear();
+
+        for (int i = 0; i < 8; ++i) {
+            outMesh.positions.push_back(rawPos[static_cast<size_t>(i)]);
+        }
+
+        static const uint32_t kCubeIdx[] = {
+            0, 1, 2, 0, 2, 3, // bottom
+            4, 5, 6, 4, 6, 7, // top
+            0, 1, 5, 0, 5, 4, // side
+            1, 2, 6, 1, 6, 5, // side
+            2, 3, 7, 2, 7, 6, // side
+            3, 0, 4, 3, 4, 7  // side
+        };
+        const int triCount = static_cast<int>(sizeof(kCubeIdx) / (3 * sizeof(uint32_t)));
+        outMesh.indices.insert(outMesh.indices.end(), kCubeIdx, kCubeIdx + sizeof(kCubeIdx) / sizeof(uint32_t));
+        for (int t = 0; t < triCount; ++t) {
+            outMesh.triangleObjIds.push_back(currentObjId);
+        }
+    }
 
     if (outMesh.positions.empty() || outMesh.indices.empty())
         return false;

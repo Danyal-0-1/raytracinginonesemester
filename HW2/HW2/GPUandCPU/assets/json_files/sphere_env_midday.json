@@ -1,0 +1,63 @@
+{
+  "settings": {
+    "max_bounces": 8,
+    "spp": 10,
+    "diffuse_bounce": true
+  },
+  "miss_color": [0.0, 0.0, 0.0],
+  "camera": {
+    "focal_length_mm": 28.0,
+    "sensor_height_mm": 24.0,
+    "pixel_width": 1280,
+    "pixel_height": 720,
+    "position": [0.0, -3.8, 1.5],
+    "look_at": [0.0, 0.6, 0.65],
+    "up": [0.0, 0.0, 1.0]
+  },
+  "environment": {
+    "enabled": true,
+    "preset": "midday",
+    "location": "Tempe, AZ",
+    "date": "2026-03-03",
+    "time": "12:00",
+    "exposure": 1.20
+  },
+  "scene": [
+    {
+      "name": "main_sphere",
+      "type": "mesh",
+      "path": "./assets/meshes/sphere.obj",
+      "transform": {
+        "position": [0.0, 0.9, 0.72],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [0.72, 0.72, 0.72]
+      },
+      "material": {
+        "albedo": [0.80, 0.72, 0.66],
+        "kd": 0.35,
+        "ks": 0.65,
+        "specular_color": [0.95, 0.94, 0.92],
+        "shininess": 300,
+        "kr": 0.55
+      }
+    },
+    {
+      "name": "ground",
+      "type": "mesh",
+      "path": "./assets/meshes/plane_5x5.obj",
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [2.2, 2.2, 1.0]
+      },
+      "material": {
+        "albedo": [0.58, 0.58, 0.60],
+        "kd": 0.70,
+        "ks": 0.30,
+        "specular_color": [0.95, 0.95, 0.97],
+        "shininess": 220,
+        "kr": 0.30
+      }
+    }
+  ]
+}

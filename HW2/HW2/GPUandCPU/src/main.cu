@@ -14,6 +14,9 @@
 #include <chrono>
 #include <fstream>
 #include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <algorithm>
 
 #ifdef __CUDACC__
 __global__ void buildTrianglesKernel(const MeshView mesh, Triangle* out, int numTriangles) {
@@ -95,33 +98,225 @@ static inline void applyObjectTransform(Mesh& mesh, const SceneObject& obj) {
     }
 }
 
+static inline bool fileExists(const std::string& path) {
+    std::ifstream f(path);
+    return static_cast<bool>(f);
+}
+
+static inline std::string basenameNoExt(const std::string& path) {
+    size_t slash = path.find_last_of("/\\");
+    std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
+    size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos) name = name.substr(0, dot);
+    return name;
+}
+
+static inline void appendTimingCsv(
+    const std::string& csv_path,
+    const char* backend,
+    const char* scene_name,
+    const char* preset_name,
+    int spp,
+    int width,
+    int height,
+    int bounces,
+    double seconds)
+{
+    if (csv_path.empty()) return;
+
+    bool write_header = true;
+    {
+        std::ifstream in(csv_path);
+        if (in.good()) {
+            in.seekg(0, std::ios::end);
+            write_header = (in.tellg() == 0);
+        }
+    }
+
+    std::ofstream out(csv_path, std::ios::app);
+    if (!out) {
+        std::cerr << "Warning: failed to open timing csv for append: " << csv_path << "\n";
+        return;
+    }
+    if (write_header) {
+        out << "backend,scene,preset,spp,width,height,bounces,seconds\n";
+    }
+    out << backend << ","
+        << scene_name << ","
+        << preset_name << ","
+        << spp << ","
+        << width << ","
+        << height << ","
+        << bounces << ","
+        << std::fixed << std::setprecision(6) << seconds
+        << "\n";
+}
+
+static inline void printUsage(const char* exe) {
+    std::printf("Usage: %s [scene.json | obj1 obj2 ...] [--spp N] [--output out.png] [--timing-csv file.csv]\n", exe);
+    std::printf("       [--env-preset sunrise|midday|sunset|night_moon|night_nomoon] [--env-enabled 0|1]\n");
+    std::printf("       [--sun-elev deg] [--sun-azim deg] [--moon-intensity f] [--sky-intensity f]\n");
+    std::printf("       [--sun-intensity f] [--turbidity f] [--star-intensity f] [--star-density f] [--exposure f]\n");
+}
+
 int main(int argc, char** argv)
 {
 
     using vec3 = Vec3;
     using point3 = Vec3;
 
+    std::vector<std::string> positional_args;
+    std::string output_path = "render.png";
+    std::string timing_csv_path;
+    int cli_spp = -1;
+    bool cli_has_env_preset = false;
+    EnvironmentPreset cli_env_preset = EnvironmentPreset::Custom;
+    bool cli_has_env_enabled = false;
+    bool cli_env_enabled = false;
+    bool cli_has_sun_elev = false;
+    float cli_sun_elev_deg = 0.0f;
+    bool cli_has_sun_azim = false;
+    float cli_sun_azim_deg = 0.0f;
+    bool cli_has_moon_intensity = false;
+    float cli_moon_intensity = 0.0f;
+    bool cli_has_sky_intensity = false;
+    float cli_sky_intensity = 0.0f;
+    bool cli_has_sun_intensity = false;
+    float cli_sun_intensity = 0.0f;
+    bool cli_has_turbidity = false;
+    float cli_turbidity = 0.0f;
+    bool cli_has_star_intensity = false;
+    float cli_star_intensity = 0.0f;
+    bool cli_has_star_density = false;
+    float cli_star_density = 0.0f;
+    bool cli_has_exposure = false;
+    float cli_exposure = 1.0f;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--help") {
+            printUsage(argv[0]);
+            return 0;
+        }
+        if (arg == "--spp") {
+            if (i + 1 >= argc) {
+                std::cerr << "--spp expects an integer value\n";
+                return 1;
+            }
+            cli_spp = std::atoi(argv[++i]);
+            continue;
+        }
+        if (arg == "--output") {
+            if (i + 1 >= argc) {
+                std::cerr << "--output expects a file path\n";
+                return 1;
+            }
+            output_path = argv[++i];
+            continue;
+        }
+        if (arg == "--timing-csv") {
+            if (i + 1 >= argc) {
+                std::cerr << "--timing-csv expects a file path\n";
+                return 1;
+            }
+            timing_csv_path = argv[++i];
+            continue;
+        }
+        if (arg == "--env-preset" || arg == "--preset") {
+            if (i + 1 >= argc) {
+                std::cerr << "--env-preset expects a preset string\n";
+                return 1;
+            }
+            const std::string p = argv[++i];
+            cli_env_preset = SceneIO::preset_from_string(p);
+            cli_has_env_preset = true;
+            continue;
+        }
+        if (arg == "--env-enabled") {
+            if (i + 1 >= argc) {
+                std::cerr << "--env-enabled expects 0 or 1\n";
+                return 1;
+            }
+            cli_has_env_enabled = true;
+            cli_env_enabled = (std::atoi(argv[++i]) != 0);
+            continue;
+        }
+        if (arg == "--sun-elev") {
+            if (i + 1 >= argc) { std::cerr << "--sun-elev expects a float\n"; return 1; }
+            cli_has_sun_elev = true;
+            cli_sun_elev_deg = std::atof(argv[++i]);
+            continue;
+        }
+        if (arg == "--sun-azim") {
+            if (i + 1 >= argc) { std::cerr << "--sun-azim expects a float\n"; return 1; }
+            cli_has_sun_azim = true;
+            cli_sun_azim_deg = std::atof(argv[++i]);
+            continue;
+        }
+        if (arg == "--moon-intensity") {
+            if (i + 1 >= argc) { std::cerr << "--moon-intensity expects a float\n"; return 1; }
+            cli_has_moon_intensity = true;
+            cli_moon_intensity = std::atof(argv[++i]);
+            continue;
+        }
+        if (arg == "--sky-intensity") {
+            if (i + 1 >= argc) { std::cerr << "--sky-intensity expects a float\n"; return 1; }
+            cli_has_sky_intensity = true;
+            cli_sky_intensity = std::atof(argv[++i]);
+            continue;
+        }
+        if (arg == "--sun-intensity") {
+            if (i + 1 >= argc) { std::cerr << "--sun-intensity expects a float\n"; return 1; }
+            cli_has_sun_intensity = true;
+            cli_sun_intensity = std::atof(argv[++i]);
+            continue;
+        }
+        if (arg == "--turbidity") {
+            if (i + 1 >= argc) { std::cerr << "--turbidity expects a float\n"; return 1; }
+            cli_has_turbidity = true;
+            cli_turbidity = std::atof(argv[++i]);
+            continue;
+        }
+        if (arg == "--star-intensity") {
+            if (i + 1 >= argc) { std::cerr << "--star-intensity expects a float\n"; return 1; }
+            cli_has_star_intensity = true;
+            cli_star_intensity = std::atof(argv[++i]);
+            continue;
+        }
+        if (arg == "--star-density") {
+            if (i + 1 >= argc) { std::cerr << "--star-density expects a float\n"; return 1; }
+            cli_has_star_density = true;
+            cli_star_density = std::atof(argv[++i]);
+            continue;
+        }
+        if (arg == "--exposure") {
+            if (i + 1 >= argc) { std::cerr << "--exposure expects a float\n"; return 1; }
+            cli_has_exposure = true;
+            cli_exposure = std::atof(argv[++i]);
+            continue;
+        }
+        positional_args.push_back(arg);
+    }
+
     std::vector<SceneObject> load_objects;
     Scene scene;
     bool has_scene = false;
-    if (argc >= 2) {
-        std::string first = argv[1];
+    std::string scene_path;
+    if (!positional_args.empty()) {
+        const std::string first = positional_args.front();
         const bool is_scene =
             (first.size() >= 5 && first.substr(first.size() - 5) == ".json") ||
             (first.size() >= 6 && first.substr(first.size() - 6) == ".scene");
         if (is_scene) {
+            scene_path = first;
             std::string err;
-            if (!SceneIO::LoadSceneFromFile(first, scene, &err)) {
+            if (!SceneIO::LoadSceneFromFile(scene_path, scene, &err)) {
                 std::cerr << "Failed to load scene: " << err << "\n";
                 return 1;
             }
             has_scene = true;
-            const std::string base_dir = SceneIO::dirname(first);
+            const std::string base_dir = SceneIO::dirname(scene_path);
             const std::string project_dir = SceneIO::dirname(SceneIO::dirname(base_dir));
-            auto file_exists = [](const std::string& p) {
-                std::ifstream f(p);
-                return static_cast<bool>(f);
-            };
             for (const auto& obj : scene.objects) {
                 if (!obj.type.empty() && obj.type != "mesh") continue;
                 SceneObject resolved = obj;
@@ -134,11 +329,11 @@ int main(int argc, char** argv)
                     }
                     project_relative = SceneIO::join_path(project_dir, project_relative);
 
-                    if (file_exists(scene_relative)) {
+                    if (fileExists(scene_relative)) {
                         path = scene_relative;
-                    } else if (file_exists(path)) {
+                    } else if (fileExists(path)) {
                         // Keep cwd-relative path as-is.
-                    } else if (file_exists(project_relative)) {
+                    } else if (fileExists(project_relative)) {
                         path = project_relative;
                     } else {
                         // Fall back to scene-relative for clearer diagnostics.
@@ -149,9 +344,9 @@ int main(int argc, char** argv)
                 load_objects.push_back(resolved);
             }
         } else {
-            for (int i = 1; i < argc; ++i) {
+            for (const std::string& obj_path : positional_args) {
                 SceneObject obj;
-                obj.path = argv[i];
+                obj.path = obj_path;
                 load_objects.push_back(obj);
             }
         }
@@ -321,18 +516,50 @@ int main(int argc, char** argv)
     // --- Camera and Ray Generation ---
     int max_depth = has_scene ? scene.settings.max_depth : 1;
     int spp = has_scene ? scene.settings.spp : 1;
+    if (cli_spp > 0) spp = cli_spp;
     bool diffuse_bounce = has_scene ? scene.settings.diffuse_bounce : true;
 
     Vec3 miss_color = has_scene ? scene.miss_color : make_vec3(0.0f, 0.0f, 0.0f);
+    Environment env = has_scene ? scene.environment : Environment();
+    if (cli_has_env_preset) {
+        ApplyEnvironmentPreset(env, cli_env_preset);
+        env.enabled = true;
+    }
+    if (cli_has_env_enabled) {
+        env.enabled = cli_env_enabled;
+    }
+    if (cli_has_sky_intensity) env.sky_intensity = cli_sky_intensity;
+    if (cli_has_sun_intensity) env.sun_intensity = cli_sun_intensity;
+    if (cli_has_turbidity) env.turbidity = cli_turbidity;
+    if (cli_has_moon_intensity) {
+        env.moon_intensity = cli_moon_intensity;
+        env.moon_enabled = (cli_moon_intensity > 0.0f);
+    }
+    if (cli_has_star_intensity) env.star_intensity = cli_star_intensity;
+    if (cli_has_star_density) env.star_density = cli_star_density;
+    if (cli_has_exposure) env.exposure = cli_exposure;
+    if (cli_has_sun_elev || cli_has_sun_azim) {
+        float elev = 0.0f;
+        float azim = 0.0f;
+        ElevationAzimuthFromDirectionDeg(env.sun_dir, elev, azim);
+        if (cli_has_sun_elev) elev = cli_sun_elev_deg;
+        if (cli_has_sun_azim) azim = cli_sun_azim_deg;
+        env.sun_dir = DirectionFromElevationAzimuthDeg(elev, azim);
+        env.preset = EnvironmentPreset::Custom;
+    }
     Camera cam = has_scene ? scene.camera : Camera();
     std::vector<Light> render_lights = scene.lights;
     if (render_lights.empty()) {
-        Light fallback;
-        fallback.position = make_vec3(-3.0f, 0.0f, 1.0f);
-        fallback.color = make_vec3(1.0f, 1.0f, 1.0f);
-        fallback.intensity = 1;
-        render_lights.push_back(fallback);
-        printf("No lights in scene, using fallback light.\n");
+        if (!env.enabled) {
+            Light fallback;
+            fallback.position = make_vec3(-3.0f, 0.0f, 1.0f);
+            fallback.color = make_vec3(1.0f, 1.0f, 1.0f);
+            fallback.intensity = 1;
+            render_lights.push_back(fallback);
+            printf("No lights in scene, using fallback light.\n");
+        } else {
+            printf("Environment enabled with zero point lights; fallback light disabled.\n");
+        }
     }
     const int num_lights = static_cast<int>(render_lights.size());
     const int num_object_materials = static_cast<int>(objectMaterials.size());
@@ -342,6 +569,12 @@ int main(int argc, char** argv)
     const int num_pixels = img_w * img_h;
     // const int num_rays = num_pixels * spp;
     std::vector<Vec3> image(num_pixels, make_vec3(0.0f, 0.0f, 0.0f));
+    const std::string scene_name = has_scene ? basenameNoExt(scene_path) : std::string("mesh_input");
+    std::string timing_preset = env.enabled
+        ? std::string(EnvironmentPresetToString(env.preset))
+        : (scene_name.find("pointlight") != std::string::npos ? std::string("pointlight") : std::string("env_disabled"));
+    const char* preset_name = timing_preset.c_str();
+    double render_seconds = 0.0;
 
 #ifdef __CUDACC__
     Triangle* d_tris = nullptr;
@@ -350,8 +583,10 @@ int main(int argc, char** argv)
 
     CHECK_CUDA((cudaMalloc(&d_tris, sizeof(Triangle) * P)), true);
     CHECK_CUDA((cudaMalloc(&d_image, sizeof(Vec3) * img_w * img_h)), true);
-    CHECK_CUDA((cudaMalloc(&d_lights, sizeof(Light) * num_lights)), true);
-    CHECK_CUDA((cudaMemcpy(d_lights, render_lights.data(), sizeof(Light) * num_lights, cudaMemcpyHostToDevice)), true);
+    if (num_lights > 0) {
+        CHECK_CUDA((cudaMalloc(&d_lights, sizeof(Light) * num_lights)), true);
+        CHECK_CUDA((cudaMemcpy(d_lights, render_lights.data(), sizeof(Light) * num_lights, cudaMemcpyHostToDevice)), true);
+    }
 
     const int threads = 256;
     const int tri_blocks = (static_cast<int>(P) + threads - 1) / threads;
@@ -359,26 +594,37 @@ int main(int argc, char** argv)
     CHECK_CUDA((cudaDeviceSynchronize()), true);
 
     // Warm up with a tiny launch to pay first-launch/JIT cost without full-frame work.
-    render(P, 1, 1, cam, miss_color, max_depth, 1, bvhState.Nodes, bvhState.AABBs, d_tris,
+    render(P, 1, 1, cam, miss_color, env, max_depth, 1, bvhState.Nodes, bvhState.AABBs, d_tris,
            d_triangle_obj_ids, d_object_materials, num_object_materials,
            d_lights, num_lights, diffuse_bounce, d_image);
 
     // Zero image buffer before the real render (warmup wrote into it)
     CHECK_CUDA((cudaMemset(d_image, 0, sizeof(Vec3) * img_w * img_h)), true);
 
-    // clock results for render
-    auto start_render = std::chrono::high_resolution_clock::now();
-    render(P, img_w, img_h, cam, miss_color, max_depth, spp, bvhState.Nodes, bvhState.AABBs, d_tris,
+    cudaEvent_t ev_start = nullptr;
+    cudaEvent_t ev_stop = nullptr;
+    CHECK_CUDA((cudaEventCreate(&ev_start)), true);
+    CHECK_CUDA((cudaEventCreate(&ev_stop)), true);
+    CHECK_CUDA((cudaEventRecord(ev_start)), true);
+
+    render(P, img_w, img_h, cam, miss_color, env, max_depth, spp, bvhState.Nodes, bvhState.AABBs, d_tris,
            d_triangle_obj_ids, d_object_materials, num_object_materials,
            d_lights, num_lights, diffuse_bounce, d_image);
+
+    CHECK_CUDA((cudaEventRecord(ev_stop)), true);
+    CHECK_CUDA((cudaEventSynchronize(ev_stop)), true);
+    float ms_render = 0.0f;
+    CHECK_CUDA((cudaEventElapsedTime(&ms_render, ev_start, ev_stop)), true);
+    render_seconds = static_cast<double>(ms_render) / 1000.0;
+
     CHECK_CUDA((cudaMemcpy(image.data(), d_image, sizeof(Vec3) * img_w * img_h, cudaMemcpyDeviceToHost)), true);
 
-    auto end_render = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> ms_render = end_render - start_render;
-    printf("GPU Render Time: %.3f ms\n", ms_render.count());
+    printf("GPU Render Time: %.3f ms\n", ms_render);
+    cudaEventDestroy(ev_start);
+    cudaEventDestroy(ev_stop);
     cudaFree(d_tris);
     cudaFree(d_image);
-    cudaFree(d_lights);
+    if (d_lights) cudaFree(d_lights);
     cudaFree(d_positions);
     cudaFree(d_normals);
     cudaFree(d_indices);
@@ -403,11 +649,12 @@ int main(int argc, char** argv)
         h_tris[i] = Triangle(globalMesh.positions[i0], globalMesh.positions[i1], globalMesh.positions[i2], n0, n1, n2);
     }
     auto start_render = std::chrono::high_resolution_clock::now();
-    render(P, img_w, img_h, cam, miss_color, max_depth, spp, bvhState.Nodes, bvhState.AABBs, h_tris.data(),
+    render(P, img_w, img_h, cam, miss_color, env, max_depth, spp, bvhState.Nodes, bvhState.AABBs, h_tris.data(),
            globalMesh.triangleObjIds.data(), objectMaterials.data(), num_object_materials,
            render_lights.data(), num_lights, diffuse_bounce, image.data());
     auto end_render = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> ms_render = end_render - start_render;
+    render_seconds = ms_render.count() / 1000.0;
     printf("CPU Render Time: %.3f ms\n", ms_render.count());
 #endif
 
@@ -429,8 +676,27 @@ int main(int argc, char** argv)
         img_data[i * 3 + 1] = static_cast<unsigned char>(255.0f * std::min(image[i].y, 1.0f));
         img_data[i * 3 + 2] = static_cast<unsigned char>(255.0f * std::min(image[i].z, 1.0f));
     }
-    stbi_write_png("render.png", img_w, img_h, 3, img_data.data(), img_w * 3);
-    printf("Image saved to render.png\n");
+    stbi_write_png(output_path.c_str(), img_w, img_h, 3, img_data.data(), img_w * 3);
+    printf("Image saved to %s\n", output_path.c_str());
+
+#ifdef __CUDACC__
+    const char* backend_name = "gpu";
+#else
+    const char* backend_name = "cpu";
+#endif
+
+    printf("TIMING backend=%s scene=%s preset=%s spp=%d width=%d height=%d bounces=%d seconds=%.6f\n",
+           backend_name, scene_name.c_str(), preset_name, spp, img_w, img_h, max_depth, render_seconds);
+    appendTimingCsv(
+        timing_csv_path,
+        backend_name,
+        scene_name.c_str(),
+        preset_name,
+        spp,
+        img_w,
+        img_h,
+        max_depth,
+        render_seconds);
 
     return 0;
 }
