@@ -1,58 +1,88 @@
 {
-  "settings": {
-    "max_bounces": 4,
-    "spp": 64
-  },
-  "miss_color": [0.4, 0.65, 0.9],
-  "camera": {
-    "focal_length_mm": 24.0,
-    "pixel_width": 800,
-    "pixel_height": 600,
-    "position": [0.0, -2.0, 0.3],
-    "look_at": [0.0, 0.0, 0.2],
-    "up": [0.0, 0.0, 1.0]
-  },
-  "light": {
-    "position": [5.0, -15.0, 20.0],
-    "color": [1.0, 0.95, 0.85],
-    "intensity": 3
-  },
-  "scene": [
-    {
-      "name": "old_main",
-      "type": "mesh",
-      "path": "./assets/meshes/old_main.obj",
-      "use_mtl": true,
-      "transform": {
-        "position": [0.0, 0.0, 0.3],
-        "rotation": [90.0, 0.0, 0.0],
-        "scale": [1.0, 1.0, 1.0]
-      },
-      "material": {
-        "albedo": [0.7, 0.65, 0.6],
-        "kd": 0.85,
-        "ks": 0.05,
-        "shininess": 8,
-        "kr": 0.0,
-        "diffuse_texture": "../assets/meshes/old_main.png"
-      }
+    "settings": {
+        "max_bounces": 6,
+        "spp": 256,
+        "diffuse_bounce": true
     },
-    {
-      "name": "ground",
-      "type": "mesh",
-      "path": "./assets/meshes/plane_5x5.obj",
-      "transform": {
-        "position": [0.0, 0.0, -0.2],
-        "rotation": [0.0, 0.0, 0.0],
-        "scale": [20.0, 20.0, 1.0]
-      },
-      "material": {
-        "albedo": [0.10, 0.20, 0.08],
-        "kd": 0.9,
-        "ks": 0.02,
-        "shininess": 2,
-        "kr": 0.0
-      }
-    }
-  ]
+
+    "miss_color": [0.50, 0.72, 0.98],
+    "sky_hdri": "./assets/meshes/sky.hdr",
+
+    "camera": {
+        "focal_length_mm": 35.0,
+        "sensor_height_mm": 24.0,
+        "pixel_width": 1920,
+        "pixel_height": 1080,
+        "position": [ 9.0,  0.0, 2.5],
+        "look_at":  [-12.0, 0.0, 2.0],
+        "up":       [  0.0, 0.0, 1.0]
+    },
+
+    "lights": [
+        {
+            "light_type": "directional",
+            "direction":  [1.00, 0.30, 1.20],
+            "color":      [1.00, 0.95, 0.88],
+            "intensity":  10
+        }
+    ],
+
+    "scene": [
+        {
+            "name": "ground",
+            "type": "mesh",
+            "path": "./assets/meshes/plane_5x5_uv.obj",
+            "use_mtl": false,
+            "transform": {
+                "position": [-3.0, -2.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale":    [7.0, 7.0, 1.0]
+            },
+            "material": {
+                "albedo": [0.28, 0.52, 0.18],
+                "kd": 1.0,
+                "ks": 0.0,
+                "kr": 0.0,
+                "diffuse_texture": "./assets/grass/ground.png",
+                "uv_scale": 20.0
+            }
+        },
+        {
+            "name": "old_main_scene",
+            "type": "mesh",
+            "path": "./assets/meshes/old_main.obj",
+            "use_mtl": true,
+            "transform": {
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [90.0, 0.0, 0.0],
+                "scale":    [1.0, 1.0, 1.0]
+            },
+            "material": {
+                "albedo": [0.75, 0.68, 0.58],
+                "kd": 1.0,
+                "ks": 0.1,
+                "kr": 0.0
+            }
+        },
+        {
+            "name": "grass_blades",
+            "type": "mesh",
+            "path": "./assets/meshes/old_main_grass.obj",
+            "use_mtl": false,
+            "transform": {
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale":    [1.0, 1.0, 1.0]
+            },
+            "material": {
+                "albedo": [0.22, 0.52, 0.14],
+                "kd": 1.0,
+                "ks": 0.05,
+                "specular_color": [0.28, 0.50, 0.18],
+                "shininess": 16.0,
+                "kr": 0.0,
+                "diffuse_texture": "./assets/grass/grass_strands.jpg"
+            }
+        }
+    ]
 }

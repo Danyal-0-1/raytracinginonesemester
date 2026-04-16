@@ -26,7 +26,9 @@ struct Light {
     Vec3 color        = make_vec3(1.0f, 1.0f, 1.0f);
     int  intensity    = 1;
 
-    int  type         = 0;                              // 0 = point, 1 = area
+    int  type         = 0;   // 0 = point, 1 = area, 2 = directional (sun)
+    // type 2: direction points TOWARD the light (normalized sun direction)
+    Vec3 direction    = make_vec3(0.0f, 0.0f, 1.0f);
     Vec3 edge_u       = make_vec3(0.0f, 0.0f, 0.0f);
     Vec3 edge_v       = make_vec3(0.0f, 0.0f, 0.0f);
     Vec3 emission     = make_vec3(0.0f, 0.0f, 0.0f);
@@ -49,6 +51,7 @@ struct SceneObject {
     // ---- NEW: texture overrides from scene JSON ----
     std::string diffuse_tex_path;   // override diffuse texture (or empty = use MTL)
     std::string normal_tex_path;    // override normal map (or empty = use MTL)
+    std::string alpha_tex_path;     // alpha cutout mask (R < 0.5 → transparent)
     bool        use_mtl = true;     // if true, auto-load mtllib from OBJ
     
     // ---- NEW: volume-only flag (no geometry, just medium in space) ----
@@ -130,6 +133,7 @@ struct Scene {
     SceneSettings settings;
     Camera camera;
     Vec3 miss_color = make_vec3(0.0f, 0.0f, 0.0f);
+    std::string sky_hdri_path;   // optional equirectangular HDR sky map
     std::vector<Light> lights;
     std::vector<SceneObject> objects;
     std::vector<VolumeRegion> volumes;  // NEW: spatial volume regions
@@ -481,6 +485,12 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
         json_as_vec3(*miss_color, scene.miss_color);
     }
 
+    const JsonValue* sky_hdri = nullptr;
+    if (json_get(root, "sky_hdri", &sky_hdri) &&
+        sky_hdri->type == JsonValue::Type::String) {
+        scene.sky_hdri_path = sky_hdri->str;
+    }
+
     const JsonValue* camera = nullptr;
     if (json_get(root, "camera", &camera)) {
         Vec3 cam_pos = scene.camera.get_center();
@@ -521,6 +531,23 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
 
         const JsonValue* ltype = nullptr;
         if (json_get(item, "light_type", &ltype) &&
+            ltype->type == JsonValue::Type::String &&
+            ltype->str == "directional") {
+
+            lc.type = 2;
+            if (json_get(item, "direction", &v)) {
+                json_as_vec3(*v, lc.direction);
+                // Normalize in case the user didn't
+                float len = sqrtf(lc.direction.x * lc.direction.x +
+                                  lc.direction.y * lc.direction.y +
+                                  lc.direction.z * lc.direction.z);
+                if (len > 1e-8f) {
+                    lc.direction.x /= len;
+                    lc.direction.y /= len;
+                    lc.direction.z /= len;
+                }
+            }
+        } else if (json_get(item, "light_type", &ltype) &&
             ltype->type == JsonValue::Type::String &&
             ltype->str == "area") {
 
@@ -618,6 +645,10 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
                 obj.diffuse_tex_path = v->str;
             if (json_get(*material, "normal_texture", &v) && v->type == JsonValue::Type::String)
                 obj.normal_tex_path = v->str;
+            if (json_get(*material, "alpha_texture", &v) && v->type == JsonValue::Type::String)
+                obj.alpha_tex_path = v->str;
+            if (json_get(*material, "uv_scale", &v) && v->type == JsonValue::Type::Number)
+                obj.material.uv_scale = static_cast<float>(v->num);
         }
 
         // NEW: per-object "use_mtl" flag (default true)

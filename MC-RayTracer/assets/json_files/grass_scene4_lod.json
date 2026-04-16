@@ -1,0 +1,91 @@
+{
+    "settings": {
+        "max_bounces": 6,
+        "spp": 256,
+        "diffuse_bounce": true
+    },
+    "miss_color": [0.53, 0.81, 0.98],
+
+    "camera": {
+        "focal_length_mm": 35.0,
+        "sensor_height_mm": 24.0,
+        "pixel_width": 1920,
+        "pixel_height": 1080,
+        "position": [0.0, -3.0, 1.5],
+        "look_at": [0.0, 0.0, 0.2],
+        "up": [0.0, 0.0, 1.0]
+    },
+
+    "lights": [
+        {
+            "light_type": "directional",
+            "direction": [0.6, 0.4, 1.0],
+            "color": [1.0, 0.95, 0.85],
+            "intensity": 3
+        }
+    ],
+
+    "scene": [
+        {
+            "name": "ground",
+            "type": "mesh",
+            "path": "./assets/meshes/plane_5x5_uv.obj",
+            "transform": {
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0]
+            },
+            "material": {
+                "albedo": [0.4, 0.6, 0.3],
+                "kd": 1.0,
+                "ks": 0.0,
+                "kr": 0.0,
+                "diffuse_texture": "./assets/grass/ground.png",
+                "uv_scale": 4.0
+            }
+        },
+
+        {
+            "name": "lod_close_blades",
+            "type": "mesh",
+            "path": "./assets/meshes/grass_lod_blades.obj",
+            "use_mtl": false,
+            "transform": {
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0]
+            },
+            "material": {
+                "albedo": [0.25, 0.55, 0.15],
+                "kd": 1.0,
+                "ks": 0.05,
+                "specular_color": [0.3, 0.5, 0.2],
+                "shininess": 16.0,
+                "kr": 0.0,
+                "diffuse_texture": "./assets/grass/grass_strands.jpg"
+            }
+        },
+
+        {
+            "name": "lod_mid_billboards",
+            "type": "mesh",
+            "path": "./assets/meshes/grass_lod_billboards.obj",
+            "use_mtl": false,
+            "transform": {
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0]
+            },
+            "material": {
+                "albedo": [0.25, 0.55, 0.15],
+                "kd": 1.0,
+                "ks": 0.05,
+                "specular_color": [0.3, 0.5, 0.2],
+                "shininess": 16.0,
+                "kr": 0.0,
+                "diffuse_texture": "./assets/grass/grass_billboard_diffuse.png",
+                "alpha_texture":   "./assets/grass/grass_billboard_alpha.png"
+            }
+        }
+    ]
+}

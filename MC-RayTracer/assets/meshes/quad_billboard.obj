@@ -1,0 +1,20 @@
+# Unit billboard quad — 1m wide x 1m tall, standing vertically in Z-up.
+# Sits on Z=0 plane, extends to Z=1. Width along X axis.
+# Normal faces -Y (toward camera positioned at negative Y).
+# Triangles are double-sided in this renderer, so both sides are shaded.
+o Quad_Billboard
+# vertices:  x    y    z
+v -0.5  0.0  0.0
+v  0.5  0.0  0.0
+v  0.5  0.0  1.0
+v -0.5  0.0  1.0
+# normal (facing -Y)
+vn  0.0 -1.0  0.0
+# UV coords
+vt 0.0 0.0
+vt 1.0 0.0
+vt 1.0 1.0
+vt 0.0 1.0
+# faces: vertex/uv/normal
+f 1/1/1 2/2/1 3/3/1
+f 1/1/1 3/3/1 4/4/1

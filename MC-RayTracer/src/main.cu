@@ -357,6 +357,10 @@ int main(int argc, char** argv)
                 if (!mtl.map_Kd.empty()) {
                     mat.diffuseTexIdx = registerTexture(mtl.map_Kd);
                 }
+                // Register alpha/dissolve mask from MTL (leaf cards, cutouts)
+                if (!mtl.map_d.empty()) {
+                    mat.alphaTexIdx = registerTexture(mtl.map_d);
+                }
                 // Register normal map from MTL
                 if (!mtl.map_Bump.empty()) {
                     mat.normalTexIdx = registerTexture(mtl.map_Bump);
@@ -377,6 +381,9 @@ int main(int argc, char** argv)
             }
             if (!obj.normal_tex_path.empty()) {
                 mat.normalTexIdx = registerTexture(obj.normal_tex_path);
+            }
+            if (!obj.alpha_tex_path.empty()) {
+                mat.alphaTexIdx = registerTexture(obj.alpha_tex_path);
             }
 
             objectMaterials[oid] = mat;
@@ -674,6 +681,32 @@ int main(int argc, char** argv)
                                sizeof(TextureData) * numTextures, cudaMemcpyHostToDevice)), true);
     }
 
+    // ---- Load & upload HDR sky environment map ----
+    HDRTextureData  h_hdri{};          // host-side view (data = host ptr)
+    HDRTextureData* d_hdri = nullptr;  // device pointer to HDRTextureData struct
+    float*          d_hdri_pixels = nullptr;
+    HDRTexture*     hdri_owner = nullptr;
+
+    if (!scene.sky_hdri_path.empty()) {
+        hdri_owner = LoadHDRTexture(scene.sky_hdri_path);
+        if (hdri_owner) {
+            size_t floatBytes = (size_t)hdri_owner->width * hdri_owner->height * 3 * sizeof(float);
+            CHECK_CUDA((cudaMalloc(&d_hdri_pixels, floatBytes)), true);
+            CHECK_CUDA((cudaMemcpy(d_hdri_pixels, hdri_owner->data.data(),
+                                   floatBytes, cudaMemcpyHostToDevice)), true);
+
+            // Build a device-side HDRTextureData struct pointing to device pixels
+            HDRTextureData dev_hdri;
+            dev_hdri.width  = hdri_owner->width;
+            dev_hdri.height = hdri_owner->height;
+            dev_hdri.data   = d_hdri_pixels;
+
+            CHECK_CUDA((cudaMalloc(&d_hdri, sizeof(HDRTextureData))), true);
+            CHECK_CUDA((cudaMemcpy(d_hdri, &dev_hdri,
+                                   sizeof(HDRTextureData), cudaMemcpyHostToDevice)), true);
+        }
+    }
+
 #else
     MeshView h_mesh = globalMesh.getView();
     bvh.calculateAABBs(h_mesh, bvhState.AABBs);
@@ -840,7 +873,8 @@ int main(int argc, char** argv)
            d_image, nullptr, nullptr, nee_mode,
            d_objectMedia, numObjectMedia,
            d_textures, numTextures,
-           d_volumeRegions, numVolumeRegions);
+           d_volumeRegions, numVolumeRegions,
+           d_hdri);
 
     CHECK_CUDA((cudaMemset(d_image, 0, sizeof(Vec3) * img_w * img_h)), true);
     if (use_denoiser) {
@@ -856,7 +890,8 @@ int main(int argc, char** argv)
            d_image, d_albedo_aov, d_normal_aov, nee_mode,
            d_objectMedia, numObjectMedia,
            d_textures, numTextures,
-           d_volumeRegions, numVolumeRegions);
+           d_volumeRegions, numVolumeRegions,
+           d_hdri);
 
     auto end_render = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> ms_render = end_render - start_render;

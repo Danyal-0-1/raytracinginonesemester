@@ -20,10 +20,15 @@ struct Material {
     // Emission — nonzero makes this surface an area light (Mitsuba-style)
     Vec3  emission      = make_vec3(0.0f, 0.0f, 0.0f);
 
-    // Texture mapping 
+    // Texture mapping
     // Index into the global texture array. -1 means "no texture, use flat color".
     int   diffuseTexIdx = -1;   // albedo / diffuse map
     int   normalTexIdx  = -1;   // tangent-space normal map
+    int   alphaTexIdx   = -1;   // alpha mask: texel R < 0.5 → cutout (skip hit)
+
+    // UV tiling: UVs are multiplied by this before all texture lookups.
+    // 1.0 = no tiling; 4.0 = texture repeats 4× in each axis.
+    float uv_scale = 1.0f;
 };
 
 // Precomputed info for each emissive triangle, used for NEE sampling.

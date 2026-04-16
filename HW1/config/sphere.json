@@ -1,0 +1,60 @@
+{
+    "settings": {
+        "max_bounces": 8
+    },
+    "camera": {
+        "focal_length_mm": 16.0,
+        "sensor_height_mm": 24.0,
+        "pixel_width": 480,
+        "pixel_height": 360,
+        "position": [0.0, -2.0, 1.2],
+        "look_at": [0.0, 0.0, 0.5],
+        "up": [0.0, 0.0, 1.0]
+    },
+    "light": {
+        "position": [-2.0, -1.0, 1.0],
+        "color": [1.0, 1.0, 1.0]
+    },
+    "scene": [
+        {
+            "name": "sphere_1",
+            "type": "mesh",
+            "path": "./assets/meshes/sphere.obj",
+            "transform": {
+                "position": [0.8, 0.0, 0.5],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale": [0.5, 0.5, 0.5]
+            }
+        },
+        {
+            "name": "sphere_2",
+            "type": "mesh",
+            "path": "./assets/meshes/sphere.obj",
+            "transform": {
+                "position": [-0.6, -0.2, 0.2],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale": [0.2, 0.2, 0.2]
+            }
+        },
+        {
+            "name": "sphere_3",
+            "type": "mesh",
+            "path": "./assets/meshes/sphere.obj",
+            "transform": {
+                "position": [-0.2, 0.6, 0.7],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale": [0.7, 0.7, 0.7]
+            }
+        },
+        {
+            "name": "ground",
+            "type": "mesh",
+            "path": "./assets/meshes/plane_5x5.obj",
+            "transform": {
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0]
+            }
+        }
+    ]
+}

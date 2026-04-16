@@ -262,6 +262,20 @@ struct VolumeRegionGPU {
     }
 };
 
+// ============================================================
+// sampleHDRI — equirectangular sample for a Z-up world direction.
+//   U = azimuth  (atan2(y, x) mapped to [0,1])
+//   V = elevation (asin(z)    mapped to [0,1], 0=nadir, 1=zenith)
+// ============================================================
+HYBRID_FUNC inline Vec3 sampleHDRI(const HDRTextureData& hdri, const Vec3& dir) {
+    constexpr float INV_2PI = 0.15915494309f;
+    constexpr float INV_PI  = 0.31830988618f;
+    float dz = fminf(fmaxf(dir.z, -1.0f), 1.0f);
+    float u  = 0.5f + atan2f(dir.y, dir.x) * INV_2PI;
+    float v  = 0.5f + asinf(dz) * INV_PI;
+    return hdri.sample(u, v);
+}
+
 void render(
     const size_t numTriangles,
     int W, int H,
@@ -291,7 +305,8 @@ void render(
     const TextureData* __restrict__ textures = nullptr,
     int numTextures = 0,
     const VolumeRegionGPU* __restrict__ volumeRegions = nullptr,
-    int numVolumeRegions = 0);
+    int numVolumeRegions = 0,
+    const HDRTextureData* __restrict__ hdri = nullptr);
 
 
 HYBRID_FUNC inline float rng_next(unsigned int& state) {
@@ -698,7 +713,8 @@ HYBRID_FUNC inline Vec3 TraceRayIterative(
     const TextureData* __restrict__ textures = nullptr,
     int numTextures = 0,
     const VolumeRegionGPU* __restrict__ volumeRegions = nullptr,
-    int numVolumeRegions = 0)
+    int numVolumeRegions = 0,
+    const HDRTextureData* __restrict__ hdri = nullptr)
 {
     if (maxDepth <= 0) return make_vec3(0.0f, 0.0f, 0.0f);
 
@@ -899,13 +915,25 @@ HYBRID_FUNC inline Vec3 TraceRayIterative(
         // 4. No hit → sky / miss color
         // ----------------------------------------------------------------
         if (!hitRecord.hit) {
-            radiance = radiance + throughput * missColor;
+            Vec3 sky = (hdri && hdri->width > 0)
+                       ? sampleHDRI(*hdri, ray.direction())
+                       : missColor;
+            radiance = radiance + throughput * sky;
             break;
         }
 
         assignMaterialToHit(hitRecord, numTriangles, triObjectIds,
                             objectMaterials, numObjectMaterials,
                             textures, numTextures);
+
+        // ----------------------------------------------------------------
+        // 4b. Alpha cutout: transparent texel → skip this hit and continue
+        // ----------------------------------------------------------------
+        if (hitRecord.alpha_masked) {
+            ray = Ray(hitRecord.p + ray.direction() * RT_EPS, ray.direction());
+            --depth;  // don't count as a bounce
+            continue;
+        }
 
         // ----------------------------------------------------------------
         // 5. Emissive surface

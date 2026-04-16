@@ -39,9 +39,9 @@ renderBatchCUDA(const int numTriangles,
        int numObjectMedia,
        const TextureData* __restrict__ textures,
        int numTextures,
-       // NEW: volume regions
        const VolumeRegionGPU* __restrict__ volumeRegions,
-       int numVolumeRegions)
+       int numVolumeRegions,
+       const HDRTextureData* __restrict__ hdri)
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -75,7 +75,8 @@ renderBatchCUDA(const int numTriangles,
             nee_mode,
             objectMedia, numObjectMedia,
             textures, numTextures,
-            volumeRegions, numVolumeRegions
+            volumeRegions, numVolumeRegions,
+            hdri
         );
         batch_accum = batch_accum + color;
 
@@ -90,7 +91,10 @@ renderBatchCUDA(const int numTriangles,
                 albedo_aov[pix_id] = aovHit.mat.albedo;
                 normal_aov[pix_id] = normalize(aovHit.normal);
             } else {
-                albedo_aov[pix_id] = missColor;
+                Vec3 sky = (hdri && hdri->width > 0)
+                           ? sampleHDRI(*hdri, ray.direction())
+                           : missColor;
+                albedo_aov[pix_id] = sky;
                 normal_aov[pix_id] = make_vec3(0.0f, 0.0f, 0.0f);
             }
         }
@@ -137,9 +141,9 @@ void render(
     int numObjectMedia,
     const TextureData* __restrict__ textures,
     int numTextures,
-    // NEW: volume regions
     const VolumeRegionGPU* __restrict__ volumeRegions,
-    int numVolumeRegions)
+    int numVolumeRegions,
+    const HDRTextureData* __restrict__ hdri)
 {
 #ifdef __CUDACC__
     dim3 tile_grid((W + BLOCK_X - 1) / BLOCK_X, (H + BLOCK_Y - 1) / BLOCK_Y, 1);
@@ -176,7 +180,8 @@ void render(
             nee_mode,
             objectMedia, numObjectMedia,
             textures, numTextures,
-            volumeRegions, numVolumeRegions
+            volumeRegions, numVolumeRegions,
+            hdri
         );
     }
 
@@ -216,7 +221,8 @@ void render(
                     nee_mode,
                     objectMedia, numObjectMedia,
                     textures, numTextures,
-                    volumeRegions, numVolumeRegions
+                    volumeRegions, numVolumeRegions,
+                    hdri
                 );
 
                 // Write AOVs on first sample

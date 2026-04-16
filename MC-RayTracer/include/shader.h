@@ -78,6 +78,13 @@ HYBRID_FUNC inline bool IsInShadow(const Vec3& P,
                                     const BVHNode* nodes,
                                     const AABB* aabbs)
 {
+    if (light.type == 2) {
+        // Directional (sun): shadow ray in the toward-light direction, no distance limit
+        Ray shadowRay(P + N * RT_EPS, light.direction);
+        HitRecord shadowHit{};
+        SearchBVH(triCount, shadowRay, nodes, aabbs, tris, shadowHit);
+        return shadowHit.hit;
+    }
     Vec3 toL = light.position - P;
     float distToL = length3(toL);
     if (distToL <= 0.0f) return false;
@@ -109,7 +116,9 @@ HYBRID_FUNC inline Vec3 ShadeDirect(const Ray& r,
 
     for (int i = 0; i < numLights; ++i) {
         const Light& light = lights[i];
-        Vec3 L = unit_vector(light.position - rec.p);
+        Vec3 L = (light.type == 2)
+                     ? light.direction                        // directional: fixed sun dir
+                     : unit_vector(light.position - rec.p);  // point/area: toward light
         float NdotL = fmaxf(dot(N, L), 0.0f);
         if (NdotL <= 0.0f) continue;
 
@@ -117,6 +126,7 @@ HYBRID_FUNC inline Vec3 ShadeDirect(const Ray& r,
             continue;
 
         Vec3 f = EvaluateBRDF(rec, V, L);
+        // Directional lights have no distance falloff
         Vec3 radiance = light.color * light.intensity;
 
         // Apply medium transmittance along shadow ray if applicable

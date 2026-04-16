@@ -1,0 +1,142 @@
+newmtl Brick_Path
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd -s 17 17 1 old_main_textures/herringbone_brick_03_diff_4k.jpg
+map_Ns -s 17 17 1 old_main_textures/herringbone_brick_03_rough_4k.png
+map_Bump -s 17 17 1 -bm 2.000000 old_main_textures/herringbone_brick_03_nor_gl_4k.png
+
+newmtl Material.001
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd old_main_textures/Meshy_AI__0401182337_texture.png
+
+newmtl Material.003
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd old_main_textures/Meshy_AI_Lamp_0401182422_texture.png
+
+newmtl Material.004
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd old_main_textures/Meshy_AI_Lamp_0401182422_texture.png
+
+newmtl Material.005
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd old_main_textures/Meshy_AI_Lamp_0401182422_texture.png
+
+newmtl Material.006
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd old_main_textures/Meshy_AI_Lamp_0401182422_texture.png
+
+newmtl Material.007
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd old_main_textures/Meshy_AI_Lamp_0401182422_texture.png
+
+newmtl Material.008
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd old_main_textures/Meshy_AI_Circular_Fountain_in__0401182327_texture.png
+
+newmtl Material.011
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd old_main_textures/Meshy_AI_Lamp_0401182422_texture.png
+
+newmtl Material.014
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd old_main_textures/Meshy_AI_palm_tree_0409002352_texture.png
+
+newmtl Material.015
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd old_main_textures/Meshy_AI_palm_tree_0409002352_texture.png
+
+newmtl Material.016
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd old_main_textures/Meshy_AI_oak_tree_0409003058_texture.png
+
+newmtl olive-leaves
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+illum 2
+map_Kd old_main_textures/olive-branch-cards.jpg
+map_d old_main_textures/olive-branch-cards-alpha.jpg
+map_Bump old_main_textures/olive-branch-cards-normal.jpg
+
+newmtl olive-tree-bark
+Ns 12.913226
+Ka 1.000000 1.000000 1.000000
+Ks 0.027273 0.027273 0.027273
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd old_main_textures/tree-specular.png
+map_Bump -bm 4.500000 old_main_textures/tree-normal.png

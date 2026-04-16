@@ -77,7 +77,8 @@ struct HitRecord {
     double   t;
     bool     front_face;
     Material mat;
-    Vec2     uv;    // <-- NEW: interpolated texture coordinate at hit point
+    Vec2     uv;          // interpolated texture coordinate at hit point
+    bool     alpha_masked = false;  // set true by ApplyTextures when alpha < 0.5
 };
 
 struct MissRecord {
@@ -124,6 +125,7 @@ struct ParsedMTLMaterial {
     float Ns        = 32.0f;                           // specular exponent
     float d         = 1.0f;                            // dissolve (opacity)
     std::string map_Kd;    // diffuse texture path
+    std::string map_d;     // alpha/dissolve mask (leaf cards, cutout geometry)
     std::string map_Bump;  // normal/bump map path (also handles "bump")
 };
 
@@ -261,6 +263,28 @@ static std::string OBJ_dirname(const std::string& path) {
 }
 
 // ============================================================
+// ParseMTLTexPath — extract the texture filename from an MTL
+// texture line, skipping any Blender/OBJ option flags that
+// precede it (e.g. "-s 17 17 1", "-bm 2.0", "-o 0 0 0").
+// Per the MTL spec the actual filename is always the last
+// whitespace-separated token on the line.
+// ============================================================
+static std::string ParseMTLTexPath(const char* s)
+{
+    std::string last, cur;
+    while (*s && *s != '\n' && *s != '\r') {
+        if (*s == ' ' || *s == '\t') {
+            if (!cur.empty()) { last = std::move(cur); cur.clear(); }
+        } else {
+            cur.push_back(*s);
+        }
+        ++s;
+    }
+    if (!cur.empty()) last = std::move(cur);
+    return last;
+}
+
+// ============================================================
 // LoadMTL — parse a Wavefront .mtl file
 // Returns a map from material name to ParsedMTLMaterial.
 // ============================================================
@@ -347,30 +371,31 @@ LoadMTL(const std::string& mtlPath, const std::string& baseDir)
             continue;
         }
 
-        // map_Kd <path>
+        // map_Kd [options] <path>
         if (std::strncmp(s, "map_Kd", 6) == 0 && (s[6] == ' ' || s[6] == '\t')) {
-            s += 6;
-            SkipWS(s);
-            std::string texPath;
-            while (*s && *s != '\n' && *s != '\r') { texPath.push_back(*s); ++s; }
-            while (!texPath.empty() && (texPath.back() == ' ' || texPath.back() == '\t'))
-                texPath.pop_back();
-            // Make relative to baseDir
+            s += 6; SkipWS(s);
+            std::string texPath = ParseMTLTexPath(s);
             if (!texPath.empty() && texPath[0] != '/' && !(texPath.size() >= 2 && texPath[1] == ':'))
                 texPath = baseDir + "/" + texPath;
             cur->map_Kd = texPath;
             continue;
         }
 
-        // map_Bump or bump <path>  (normal map)
+        // map_d [options] <path>  (alpha / dissolve mask for cutout geometry)
+        if (std::strncmp(s, "map_d", 5) == 0 && (s[5] == ' ' || s[5] == '\t')) {
+            s += 5; SkipWS(s);
+            std::string texPath = ParseMTLTexPath(s);
+            if (!texPath.empty() && texPath[0] != '/' && !(texPath.size() >= 2 && texPath[1] == ':'))
+                texPath = baseDir + "/" + texPath;
+            cur->map_d = texPath;
+            continue;
+        }
+
+        // map_Bump [options] <path>  (normal map)
         if ((std::strncmp(s, "map_Bump", 8) == 0 && (s[8] == ' ' || s[8] == '\t')) ||
             (std::strncmp(s, "map_bump", 8) == 0 && (s[8] == ' ' || s[8] == '\t'))) {
-            s += 8;
-            SkipWS(s);
-            std::string texPath;
-            while (*s && *s != '\n' && *s != '\r') { texPath.push_back(*s); ++s; }
-            while (!texPath.empty() && (texPath.back() == ' ' || texPath.back() == '\t'))
-                texPath.pop_back();
+            s += 8; SkipWS(s);
+            std::string texPath = ParseMTLTexPath(s);
             if (!texPath.empty() && texPath[0] != '/' && !(texPath.size() >= 2 && texPath[1] == ':'))
                 texPath = baseDir + "/" + texPath;
             cur->map_Bump = texPath;
@@ -378,12 +403,8 @@ LoadMTL(const std::string& mtlPath, const std::string& baseDir)
         }
 
         if (std::strncmp(s, "bump", 4) == 0 && (s[4] == ' ' || s[4] == '\t')) {
-            s += 4;
-            SkipWS(s);
-            std::string texPath;
-            while (*s && *s != '\n' && *s != '\r') { texPath.push_back(*s); ++s; }
-            while (!texPath.empty() && (texPath.back() == ' ' || texPath.back() == '\t'))
-                texPath.pop_back();
+            s += 4; SkipWS(s);
+            std::string texPath = ParseMTLTexPath(s);
             if (!texPath.empty() && texPath[0] != '/' && !(texPath.size() >= 2 && texPath[1] == ':'))
                 texPath = baseDir + "/" + texPath;
             cur->map_Bump = texPath;

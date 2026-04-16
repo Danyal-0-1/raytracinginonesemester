@@ -52,8 +52,10 @@ HYBRID_FUNC inline Vec3 cross(const Vec3& u, const Vec3& v) {
 
 HYBRID_FUNC inline Vec3 unit_vector(Vec3 v) {
     float len = sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
+    if (len < 1e-12f) return make_vec3(0,0,0);
     return make_vec3(v.x/len, v.y/len, v.z/len);
 }
+
 
 inline void PrintVec3(const Vec3& v) { std::cout << "(" << v.x << ", " << v.y << ", " << v.z << ")"; }
 

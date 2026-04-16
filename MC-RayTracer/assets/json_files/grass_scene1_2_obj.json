@@ -1,0 +1,46 @@
+{
+    "settings": {
+        "max_bounces": 4,
+        "spp": 128,
+        "diffuse_bounce": true
+    },
+    "miss_color": [0.53, 0.81, 0.98],
+
+    "camera": {
+        "focal_length_mm": 35.0,
+        "sensor_height_mm": 24.0,
+        "pixel_width": 1920,
+        "pixel_height": 1080,
+        "position": [0.0, -3.0, 1.5],
+        "look_at": [0.0, 0.0, 0.2],
+        "up": [0.0, 0.0, 1.0]
+    },
+
+    "lights": [
+        {
+            "light_type": "directional",
+            "direction": [0.6, 0.4, 1.0],
+            "color": [1.0, 0.95, 0.85],
+            "intensity": 3
+        }
+    ],
+
+    "scene": [
+        {
+            "name": "blender_grass_plane",
+            "type": "mesh",
+            "path": "./assets/grass/obj_plane/grass.obj",
+            "use_mtl": true,
+            "transform": {
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [90.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0]
+            },
+            "material": {
+                "kd": 1.0,
+                "ks": 0.0,
+                "kr": 0.0
+            }
+        }
+    ]
+}

@@ -39,17 +39,31 @@ HYBRID_FUNC inline void ApplyTextures(HitRecord& rec,
 {
     if (textures == nullptr || numTextures <= 0) return;
 
+    // Apply UV tiling scale before all lookups
+    const float su = rec.uv.x * rec.mat.uv_scale;
+    const float sv = rec.uv.y * rec.mat.uv_scale;
+
     // Diffuse texture
     const int diffIdx = rec.mat.diffuseTexIdx;
     if (diffIdx >= 0 && diffIdx < numTextures && textures[diffIdx].data != nullptr) {
-        rec.mat.albedo = textures[diffIdx].sample(rec.uv.x, rec.uv.y);
+        rec.mat.albedo = textures[diffIdx].sample(su, sv);
+    }
+
+    // Alpha cutout: sample alpha mask and flag the hit for rejection if opaque < 50%
+    const int alphaIdx = rec.mat.alphaTexIdx;
+    if (alphaIdx >= 0 && alphaIdx < numTextures && textures[alphaIdx].data != nullptr) {
+        const float alpha = textures[alphaIdx].sampleAlpha(su, sv);
+        if (alpha < 0.5f) {
+            rec.alpha_masked = true;
+            return;  // skip normal map — hit will be discarded
+        }
     }
 
     // Normal map
     const int normIdx = rec.mat.normalTexIdx;
     if (normIdx >= 0 && normIdx < numTextures && textures[normIdx].data != nullptr) {
         // Sample tangent-space normal
-        Vec3 tsN = textures[normIdx].sampleNormal(rec.uv.x, rec.uv.y);
+        Vec3 tsN = textures[normIdx].sampleNormal(su, sv);
 
         // Build TBN basis from surface normal and UV-derived tangent
         Vec3 N = normalize(rec.normal);

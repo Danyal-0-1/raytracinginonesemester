@@ -1,0 +1,25 @@
+{
+    "settings": {
+        "max_bounces": 8
+    },
+    "camera": {
+        "focal_length_mm": 45.0,
+        "sensor_height_mm": 24.0,
+        "pixel_width": 128,
+        "pixel_height": 96,
+        "position": [0.0, -0.2, 0.2],
+        "look_at": [0.0, 0.1, 0.0],
+        "up": [0.0, 0.0, 1.0]
+    },
+    "light": {
+        "position": [-3.0, 0.0, 1.0],
+        "color": [1.0, 1.0, 1.0]
+    },
+    "scene": [
+        {
+            "name": "frog",
+            "type": "mesh",
+            "path": "./assets/meshes/frog.obj"
+        }
+    ]
+}
