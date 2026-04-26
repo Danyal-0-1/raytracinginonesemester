@@ -19,6 +19,7 @@ struct SceneSettings {
     int max_depth = 1;
     int spp = 1;
     bool diffuse_bounce = true;
+    int keyframes = 1;
 };
 
 struct Light {
@@ -56,6 +57,9 @@ struct SceneObject {
     
     // ---- NEW: volume-only flag (no geometry, just medium in space) ----
     bool        is_volume = false;  // if true, register medium but skip OBJ loading
+
+    // ---- animation: multiple OBJ paths for heterogeneous media sequences ----
+    std::vector<std::string> paths;  // if non-empty, overrides path per frame
 };
 
 // Volume Region: AABB-based spatial volume with medium
@@ -137,6 +141,10 @@ struct Scene {
     std::vector<Light> lights;
     std::vector<SceneObject> objects;
     std::vector<VolumeRegion> volumes;  // NEW: spatial volume regions
+
+    // animation: per-keyframe camera positions and look_at targets
+    std::vector<Vec3> camera_positions;
+    std::vector<Vec3> camera_look_ats;
 };
 
 // ============================================================
@@ -478,6 +486,12 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
             diffuse_bounce->type == JsonValue::Type::Bool) {
             scene.settings.diffuse_bounce = diffuse_bounce->b;
         }
+        const JsonValue* keyframes_val = nullptr;
+        if (json_get(*settings, "keyframes", &keyframes_val) &&
+            keyframes_val->type == JsonValue::Type::Number) {
+            scene.settings.keyframes = static_cast<int>(keyframes_val->num);
+            if (scene.settings.keyframes < 1) scene.settings.keyframes = 1;
+        }
     }
 
     const JsonValue* miss_color = nullptr;
@@ -519,6 +533,26 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
             focal_length_mm, sensor_height_mm,
             pixel_width, pixel_height
         );
+
+        const JsonValue* positions_arr = nullptr;
+        if (json_get(*camera, "positions", &positions_arr) &&
+            positions_arr->type == JsonValue::Type::Array) {
+            for (const auto& entry : positions_arr->arr) {
+                Vec3 p;
+                if (json_as_vec3(entry, p))
+                    scene.camera_positions.push_back(p);
+            }
+        }
+
+        const JsonValue* look_ats_arr = nullptr;
+        if (json_get(*camera, "look_ats", &look_ats_arr) &&
+            look_ats_arr->type == JsonValue::Type::Array) {
+            for (const auto& entry : look_ats_arr->arr) {
+                Vec3 p;
+                if (json_as_vec3(entry, p))
+                    scene.camera_look_ats.push_back(p);
+            }
+        }
     }
 
     auto parse_one_light = [](const JsonValue& item) -> Light {
@@ -616,6 +650,15 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
         if (json_get(item, "name", &v) && v->type == JsonValue::Type::String) obj.name = v->str;
         if (json_get(item, "type", &v) && v->type == JsonValue::Type::String) obj.type = v->str;
         if (json_get(item, "path", &v) && v->type == JsonValue::Type::String) obj.path = v->str;
+        const JsonValue* paths_arr = nullptr;
+        if (json_get(item, "paths", &paths_arr) && paths_arr->type == JsonValue::Type::Array) {
+            for (const auto& entry : paths_arr->arr) {
+                if (entry.type == JsonValue::Type::String)
+                    obj.paths.push_back(entry.str);
+            }
+            if (!obj.paths.empty() && obj.path.empty())
+                obj.path = obj.paths[0];
+        }
 
         const JsonValue* transform = nullptr;
         if (json_get(item, "transform", &transform) && transform->type == JsonValue::Type::Object) {

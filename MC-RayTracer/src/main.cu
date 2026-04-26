@@ -124,6 +124,36 @@ static inline void applyObjectTransform(Mesh& mesh, const SceneObject& obj) {
     }
 }
 
+static Vec3 lerp_vec3(const Vec3& a, const Vec3& b, float t) {
+    return make_vec3(a.x + t*(b.x-a.x), a.y + t*(b.y-a.y), a.z + t*(b.z-a.z));
+}
+
+static Vec3 sample_keyframe_vec3(const std::vector<Vec3>& keys, int frame, int total_frames) {
+    if (keys.size() == 1) return keys[0];
+    float t = (total_frames <= 1) ? 0.0f : static_cast<float>(frame) / static_cast<float>(total_frames - 1);
+    float pos_f = t * static_cast<float>(keys.size() - 1);
+    int idx = static_cast<int>(pos_f);
+    if (idx >= static_cast<int>(keys.size()) - 1) return keys.back();
+    return lerp_vec3(keys[idx], keys[idx + 1], pos_f - static_cast<float>(idx));
+}
+
+static std::string frame_filename(const std::string& base, int frame, int total_frames) {
+    if (total_frames <= 1) return base;
+    size_t dot = base.rfind('.');
+    std::string stem = (dot != std::string::npos) ? base.substr(0, dot) : base;
+    std::string ext  = (dot != std::string::npos) ? base.substr(dot)    : "";
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "_%04d", frame);
+    return stem + buf + ext;
+}
+
+static int animated_path_index(int frame, int total_frames, int num_paths) {
+    if (num_paths <= 1) return 0;
+    int interval = total_frames / num_paths;
+    if (interval < 1) interval = 1;
+    return std::min(frame / interval, num_paths - 1);
+}
+
 static bool loadRawScalarField(const std::string& path,
                                int nx, int ny, int nz,
                                int format,
@@ -753,10 +783,11 @@ int main(int argc, char** argv)
     printf("CPU LBVH Build Time: %.3f ms\n", ms_cpu.count());
 #endif
 
-    // --- Camera and Ray Generation ---
+    // --- Camera and Render Settings ---
     int max_depth = has_scene ? scene.settings.max_depth : 1;
     int spp = has_scene ? scene.settings.spp : 1;
     bool diffuse_bounce = has_scene ? scene.settings.diffuse_bounce : true;
+    const int keyframes = has_scene ? scene.settings.keyframes : 1;
 
     Vec3 miss_color = has_scene ? scene.miss_color : make_vec3(0.0f, 0.0f, 0.0f);
     Camera cam = has_scene ? scene.camera : Camera();
@@ -769,51 +800,53 @@ int main(int argc, char** argv)
         render_lights = std::move(point_only);
     }
     const int num_lights = static_cast<int>(render_lights.size());
-    const int num_object_materials = static_cast<int>(objectMaterials.size());
 
-    // ---- Build emissive triangle list ----
+    // ---- Emissive triangle list (rebuildable) ----
     std::vector<EmissiveTriInfo> h_emissiveTris;
     std::vector<float> h_emissiveCDF;
     float totalEmissiveArea = 0.0f;
-    {
+    int numEmissiveTris = 0;
+
+    auto buildEmissiveTris = [&]() {
+        h_emissiveTris.clear();
+        h_emissiveCDF.clear();
+        totalEmissiveArea = 0.0f;
+        const int nm = static_cast<int>(objectMaterials.size());
         std::vector<Triangle> tmpTris(P);
-        for (size_t i = 0; i < P; ++i) {
-            const uint32_t i0 = globalMesh.indices[i * 3 + 0];
-            const uint32_t i1 = globalMesh.indices[i * 3 + 1];
-            const uint32_t i2 = globalMesh.indices[i * 3 + 2];
+        for (size_t ti = 0; ti < P; ++ti) {
+            const uint32_t i0 = globalMesh.indices[ti * 3 + 0];
+            const uint32_t i1 = globalMesh.indices[ti * 3 + 1];
+            const uint32_t i2 = globalMesh.indices[ti * 3 + 2];
             Vec3 n0 = make_vec3(0,0,0), n1 = make_vec3(0,0,0), n2 = make_vec3(0,0,0);
             if (!globalMesh.normals.empty()) {
-                n0 = globalMesh.normals[i0]; n1 = globalMesh.normals[i1]; n2 = globalMesh.normals[i2];
+                n0 = globalMesh.normals[i0];
+                n1 = globalMesh.normals[i1];
+                n2 = globalMesh.normals[i2];
             }
-            tmpTris[i] = Triangle(globalMesh.positions[i0], globalMesh.positions[i1],
-                                  globalMesh.positions[i2], n0, n1, n2);
+            tmpTris[ti] = Triangle(globalMesh.positions[i0], globalMesh.positions[i1],
+                                   globalMesh.positions[i2], n0, n1, n2);
         }
-
-        for (size_t i = 0; i < P; ++i) {
-            const int objId = globalMesh.triangleObjIds[i];
-            if (objId < 0 || objId >= num_object_materials) continue;
+        for (size_t ti = 0; ti < P; ++ti) {
+            const int objId = globalMesh.triangleObjIds[ti];
+            if (objId < 0 || objId >= nm) continue;
             const Vec3& em = objectMaterials[objId].emission;
             if (em.x <= 0.0f && em.y <= 0.0f && em.z <= 0.0f) continue;
-
-            const Triangle& tri = tmpTris[i];
+            const Triangle& tri = tmpTris[ti];
             Vec3 e1 = tri.v1 - tri.v0;
             Vec3 e2 = tri.v2 - tri.v0;
             Vec3 cr = cross(e1, e2);
             float triArea = 0.5f * sqrtf(dot(cr, cr));
             if (triArea < 1e-12f) continue;
-
             float crLen = sqrtf(dot(cr, cr));
             Vec3 faceN = cr * (1.0f / crLen);
-
             EmissiveTriInfo info;
-            info.triangleIdx = static_cast<int>(i);
+            info.triangleIdx = static_cast<int>(ti);
             info.emission = em;
             info.area = triArea;
             info.normal = faceN;
             h_emissiveTris.push_back(info);
             totalEmissiveArea += triArea;
         }
-
         h_emissiveCDF.resize(h_emissiveTris.size());
         float cumulative = 0.0f;
         for (size_t i = 0; i < h_emissiveTris.size(); ++i) {
@@ -821,16 +854,82 @@ int main(int argc, char** argv)
             h_emissiveCDF[i] = cumulative / totalEmissiveArea;
         }
         if (!h_emissiveCDF.empty()) h_emissiveCDF.back() = 1.0f;
-
+        numEmissiveTris = static_cast<int>(h_emissiveTris.size());
         printf("Emissive triangles: %zu  (total area: %.4f)\n",
                h_emissiveTris.size(), totalEmissiveArea);
-    }
-    const int numEmissiveTris = static_cast<int>(h_emissiveTris.size());
+    };
+
+    buildEmissiveTris();
 
     const int img_w = cam.pixel_width;
     const int img_h = cam.pixel_height;
     const int num_pixels = img_w * img_h;
     std::vector<Vec3> image(num_pixels, make_vec3(0.0f, 0.0f, 0.0f));
+
+    // ---- Animated geometry ----
+    std::vector<int> cur_path_indices(load_objects.size(), 0);
+
+    auto reloadAnimatedGeometry = [&]() {
+        globalMesh = Mesh{};
+        objectMaterials.clear();
+        objectMediaList.clear();
+        nextObjectId = 0;
+        for (const auto& obj : load_objects) {
+            if (obj.is_volume) {
+                if (objectMediaList.size() < static_cast<size_t>(nextObjectId + 1))
+                    objectMediaList.resize(nextObjectId + 1, HomogeneousMedium());
+                objectMediaList[nextObjectId] = obj.medium;
+                if (objectMaterials.size() < static_cast<size_t>(nextObjectId + 1))
+                    objectMaterials.resize(nextObjectId + 1, Material());
+                objectMaterials[nextObjectId] = obj.material;
+                nextObjectId++;
+                continue;
+            }
+            if (obj.path.empty()) continue;
+            std::printf("Loading OBJ: %s\n", obj.path.c_str());
+            Mesh tempMesh;
+            const int objIdBegin = nextObjectId;
+            std::vector<ParsedMTLMaterial> mtlMats;
+            std::string mtlLibName;
+            if (!LoadOBJ_ToMesh(obj.path, tempMesh, nextObjectId,
+                                obj.use_mtl ? &mtlMats : nullptr, &mtlLibName)) {
+                std::cerr << "Failed to load OBJ: " << obj.path << "\n";
+                continue;
+            }
+            applyObjectTransform(tempMesh, obj);
+            if (objectMaterials.size() < static_cast<size_t>(nextObjectId))
+                objectMaterials.resize(nextObjectId, Material());
+            if (objectMediaList.size() < static_cast<size_t>(nextObjectId))
+                objectMediaList.resize(nextObjectId, HomogeneousMedium());
+            for (int oid = objIdBegin; oid < nextObjectId; ++oid) {
+                Material mat = obj.material;
+                int localIdx = oid - objIdBegin;
+                if (obj.use_mtl && localIdx < (int)mtlMats.size() &&
+                    !mtlMats[localIdx].name.empty()) {
+                    const ParsedMTLMaterial& mtl = mtlMats[localIdx];
+                    mat.albedo        = mtl.Kd;
+                    mat.specularColor = mtl.Ks;
+                    mat.emission      = mtl.Ke;
+                    mat.shininess     = mtl.Ns;
+                    float ksMax = fmaxf(mtl.Ks.x, fmaxf(mtl.Ks.y, mtl.Ks.z));
+                    if (ksMax > 1e-4f && mat.ks <= 0.0f) mat.ks = 0.5f;
+                    if (!mtl.map_Kd.empty())   mat.diffuseTexIdx = registerTexture(mtl.map_Kd);
+                    if (!mtl.map_d.empty())    mat.alphaTexIdx   = registerTexture(mtl.map_d);
+                    if (!mtl.map_Bump.empty()) mat.normalTexIdx  = registerTexture(mtl.map_Bump);
+                    if (obj.material.emission.x > 0 || obj.material.emission.y > 0 ||
+                        obj.material.emission.z > 0)
+                        mat.emission = obj.material.emission;
+                }
+                if (!obj.diffuse_tex_path.empty()) mat.diffuseTexIdx = registerTexture(obj.diffuse_tex_path);
+                if (!obj.normal_tex_path.empty())  mat.normalTexIdx  = registerTexture(obj.normal_tex_path);
+                if (!obj.alpha_tex_path.empty())   mat.alphaTexIdx   = registerTexture(obj.alpha_tex_path);
+                objectMaterials[oid] = mat;
+                objectMediaList[oid] = obj.medium;
+            }
+            AppendMesh(globalMesh, tempMesh);
+        }
+        P = globalMesh.indices.size() / 3;
+    };
 
 #ifdef __CUDACC__
     Triangle* d_tris = nullptr;
@@ -860,14 +959,14 @@ int main(int argc, char** argv)
         CHECK_CUDA((cudaMemset(d_normal_aov, 0, sizeof(Vec3) * img_w * img_h)), true);
     }
 
-    const int threads = 256;
-    const int tri_blocks = (static_cast<int>(P) + threads - 1) / threads;
-    buildTrianglesKernel<<<tri_blocks, threads>>>(d_mesh, d_tris, static_cast<int>(P));
-    CHECK_CUDA((cudaDeviceSynchronize()), true);
+    {
+        const int tri_blocks = (static_cast<int>(P) + 256 - 1) / 256;
+        buildTrianglesKernel<<<tri_blocks, 256>>>(d_mesh, d_tris, static_cast<int>(P));
+        CHECK_CUDA((cudaDeviceSynchronize()), true);
+    }
 
-    // Warm up
     render(P, 1, 1, cam, miss_color, max_depth, 1, bvhState.Nodes, bvhState.AABBs, d_tris,
-           d_triangle_obj_ids, d_object_materials, num_object_materials,
+           d_triangle_obj_ids, d_object_materials, static_cast<int>(objectMaterials.size()),
            d_lights, num_lights, diffuse_bounce,
            d_emissiveTris, d_emissiveCDF, numEmissiveTris, totalEmissiveArea,
            d_image, nullptr, nullptr, nee_mode,
@@ -876,120 +975,307 @@ int main(int argc, char** argv)
            d_volumeRegions, numVolumeRegions,
            d_hdri);
 
-    CHECK_CUDA((cudaMemset(d_image, 0, sizeof(Vec3) * img_w * img_h)), true);
-    if (use_denoiser) {
-        CHECK_CUDA((cudaMemset(d_albedo_aov, 0, sizeof(Vec3) * img_w * img_h)), true);
-        CHECK_CUDA((cudaMemset(d_normal_aov, 0, sizeof(Vec3) * img_w * img_h)), true);
-    }
+    auto rebuildGPUGeometry = [&]() {
+        cudaFree(d_positions);
+        if (d_normals) cudaFree(d_normals);
+        if (d_uvs) cudaFree(d_uvs);
+        cudaFree(d_indices);
+        cudaFree(d_triangle_obj_ids);
+        cudaFree(d_object_materials);
+        if (d_objectMedia) cudaFree(d_objectMedia);
+        cudaFree(bvh_chunk);
 
-    auto start_render = std::chrono::high_resolution_clock::now();
-    render(P, img_w, img_h, cam, miss_color, max_depth, spp, bvhState.Nodes, bvhState.AABBs, d_tris,
-           d_triangle_obj_ids, d_object_materials, num_object_materials,
-           d_lights, num_lights, diffuse_bounce,
-           d_emissiveTris, d_emissiveCDF, numEmissiveTris, totalEmissiveArea,
-           d_image, d_albedo_aov, d_normal_aov, nee_mode,
-           d_objectMedia, numObjectMedia,
-           d_textures, numTextures,
-           d_volumeRegions, numVolumeRegions,
-           d_hdri);
+        d_positions = nullptr; d_normals = nullptr; d_uvs = nullptr;
+        d_objectMedia = nullptr;
 
-    auto end_render = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> ms_render = end_render - start_render;
-    printf("GPU Render Time: %.3f ms\n", ms_render.count());
+        const size_t newBvhSize = required<RayTracer::BVHState>(P);
+        CHECK_CUDA((cudaMalloc(&bvh_chunk, newBvhSize)), true);
+        bvhState = RayTracer::BVHState::fromChunk(bvh_chunk, P);
 
-    // ---- OptiX AI Denoiser (optional: --denoise / -d) ----
-    if (use_denoiser) {
-        auto start_denoise = std::chrono::high_resolution_clock::now();
-        OPTIX_CHECK(optixInit());
+        CHECK_CUDA((cudaMalloc(&d_positions, globalMesh.positions.size() * sizeof(Vec3))), true);
+        CHECK_CUDA((cudaMalloc(&d_indices, globalMesh.indices.size() * sizeof(uint32_t))), true);
+        CHECK_CUDA((cudaMalloc(&d_triangle_obj_ids, globalMesh.triangleObjIds.size() * sizeof(int32_t))), true);
+        CHECK_CUDA((cudaMalloc(&d_object_materials, objectMaterials.size() * sizeof(Material))), true);
+        if (!globalMesh.normals.empty())
+            CHECK_CUDA((cudaMalloc(&d_normals, globalMesh.normals.size() * sizeof(Vec3))), true);
+        if (!globalMesh.uvs.empty())
+            CHECK_CUDA((cudaMalloc(&d_uvs, globalMesh.uvs.size() * sizeof(Vec2))), true);
 
-        CUcontext cuCtx = nullptr;
-        OptixDeviceContext optixCtx = nullptr;
-        OPTIX_CHECK(optixDeviceContextCreate(cuCtx, nullptr, &optixCtx));
+        CHECK_CUDA((cudaMemcpy(d_positions, globalMesh.positions.data(), globalMesh.positions.size() * sizeof(Vec3), cudaMemcpyHostToDevice)), true);
+        CHECK_CUDA((cudaMemcpy(d_indices, globalMesh.indices.data(), globalMesh.indices.size() * sizeof(uint32_t), cudaMemcpyHostToDevice)), true);
+        CHECK_CUDA((cudaMemcpy(d_triangle_obj_ids, globalMesh.triangleObjIds.data(), globalMesh.triangleObjIds.size() * sizeof(int32_t), cudaMemcpyHostToDevice)), true);
+        CHECK_CUDA((cudaMemcpy(d_object_materials, objectMaterials.data(), objectMaterials.size() * sizeof(Material), cudaMemcpyHostToDevice)), true);
+        if (!globalMesh.normals.empty())
+            CHECK_CUDA((cudaMemcpy(d_normals, globalMesh.normals.data(), globalMesh.normals.size() * sizeof(Vec3), cudaMemcpyHostToDevice)), true);
+        if (!globalMesh.uvs.empty())
+            CHECK_CUDA((cudaMemcpy(d_uvs, globalMesh.uvs.data(), globalMesh.uvs.size() * sizeof(Vec2), cudaMemcpyHostToDevice)), true);
 
-        OptixDenoiserOptions denoiserOptions = {};
-        denoiserOptions.guideAlbedo = 1;
-        denoiserOptions.guideNormal = 1;
-        denoiserOptions.denoiseAlpha = OPTIX_DENOISER_ALPHA_MODE_COPY;
+        d_mesh.positions       = d_positions;
+        d_mesh.normals         = d_normals;
+        d_mesh.uvs             = d_uvs;
+        d_mesh.indices         = d_indices;
+        d_mesh.triangleObjIds  = d_triangle_obj_ids;
+        d_mesh.numVertices     = globalMesh.positions.size();
+        d_mesh.numIndices      = globalMesh.indices.size();
+        d_mesh.numTriangles    = P;
 
-        OptixDenoiser denoiser = nullptr;
-        OPTIX_CHECK(optixDenoiserCreate(optixCtx, OPTIX_DENOISER_MODEL_KIND_HDR,
-                                        &denoiserOptions, &denoiser));
+        const int newNumObjMedia = static_cast<int>(objectMediaList.size());
+        if (newNumObjMedia > 0) {
+            CHECK_CUDA((cudaMalloc(&d_objectMedia, sizeof(HomogeneousMedium) * newNumObjMedia)), true);
+            CHECK_CUDA((cudaMemcpy(d_objectMedia, objectMediaList.data(), sizeof(HomogeneousMedium) * newNumObjMedia, cudaMemcpyHostToDevice)), true);
+        }
 
-        OptixDenoiserSizes denoiserSizes = {};
-        OPTIX_CHECK(optixDenoiserComputeMemoryResources(denoiser,
-                        static_cast<unsigned int>(img_w),
-                        static_cast<unsigned int>(img_h),
-                        &denoiserSizes));
+        CHECK_CUDA(bvh.calculateAABBs(d_mesh, bvhState.AABBs), true);
 
-        CUdeviceptr d_denoiserState = 0, d_denoiserScratch = 0;
-        CHECK_CUDA((cudaMalloc(reinterpret_cast<void**>(&d_denoiserState), denoiserSizes.stateSizeInBytes)), true);
-        CHECK_CUDA((cudaMalloc(reinterpret_cast<void**>(&d_denoiserScratch), denoiserSizes.withoutOverlapScratchSizeInBytes)), true);
+        AABB newSceneBB;
+        newSceneBB = thrust::reduce(
+            thrust::device_pointer_cast(bvhState.AABBs + (P - 1)),
+            thrust::device_pointer_cast(bvhState.AABBs + (2*P - 1)),
+            AABB(),
+            [] __device__ __host__ (const AABB& a, const AABB& b) { return AABB::merge(a, b); });
 
-        OPTIX_CHECK(optixDenoiserSetup(denoiser, nullptr,
-                        static_cast<unsigned int>(img_w), static_cast<unsigned int>(img_h),
-                        d_denoiserState, denoiserSizes.stateSizeInBytes,
-                        d_denoiserScratch, denoiserSizes.withoutOverlapScratchSizeInBytes));
+        thrust::device_vector<unsigned int> newTriIdx(P);
+        thrust::copy(thrust::make_counting_iterator<std::uint32_t>(0),
+            thrust::make_counting_iterator<std::uint32_t>(P), newTriIdx.begin());
+        bvh.buildBVH(bvhState.Nodes, bvhState.AABBs, newSceneBB, &newTriIdx, static_cast<int>(P));
+        cudaDeviceSynchronize();
 
-        CUdeviceptr d_hdrIntensity = 0, d_intensityScratch = 0;
-        CHECK_CUDA((cudaMalloc(reinterpret_cast<void**>(&d_hdrIntensity), sizeof(float))), true);
-        CHECK_CUDA((cudaMalloc(reinterpret_cast<void**>(&d_intensityScratch), denoiserSizes.computeIntensitySizeInBytes)), true);
-
-        auto makeImage2D = [&](CUdeviceptr ptr) -> OptixImage2D {
-            OptixImage2D img = {};
-            img.data = ptr;
-            img.width = static_cast<unsigned int>(img_w);
-            img.height = static_cast<unsigned int>(img_h);
-            img.rowStrideInBytes = static_cast<unsigned int>(img_w * sizeof(Vec3));
-            img.pixelStrideInBytes = static_cast<unsigned int>(sizeof(Vec3));
-            img.format = OPTIX_PIXEL_FORMAT_FLOAT3;
-            return img;
-        };
-
-        OptixImage2D colorImg  = makeImage2D(reinterpret_cast<CUdeviceptr>(d_image));
-        OptixImage2D albedoImg = makeImage2D(reinterpret_cast<CUdeviceptr>(d_albedo_aov));
-        OptixImage2D normalImg = makeImage2D(reinterpret_cast<CUdeviceptr>(d_normal_aov));
-
-        OPTIX_CHECK(optixDenoiserComputeIntensity(denoiser, nullptr,
-                        &colorImg, d_hdrIntensity,
-                        d_intensityScratch, denoiserSizes.computeIntensitySizeInBytes));
-
-        OptixImage2D outputImg = colorImg;
-
-        OptixDenoiserGuideLayer guideLayer = {};
-        guideLayer.albedo = albedoImg;
-        guideLayer.normal = normalImg;
-
-        OptixDenoiserLayer layer = {};
-        layer.input  = colorImg;
-        layer.output = outputImg;
-
-        OptixDenoiserParams params = {};
-        params.hdrIntensity = d_hdrIntensity;
-        params.blendFactor = 0.0f;
-        params.hdrAverageColor = 0;
-        params.temporalModeUsePreviousLayers = 0;
-
-        OPTIX_CHECK(optixDenoiserInvoke(denoiser, nullptr, &params,
-                        d_denoiserState, denoiserSizes.stateSizeInBytes,
-                        &guideLayer, &layer, 1, 0, 0,
-                        d_denoiserScratch, denoiserSizes.withoutOverlapScratchSizeInBytes));
-
+        cudaFree(d_tris);
+        d_tris = nullptr;
+        CHECK_CUDA((cudaMalloc(&d_tris, sizeof(Triangle) * P)), true);
+        const int newBlocks = (static_cast<int>(P) + 256 - 1) / 256;
+        buildTrianglesKernel<<<newBlocks, 256>>>(d_mesh, d_tris, static_cast<int>(P));
         CHECK_CUDA((cudaDeviceSynchronize()), true);
 
-        auto end_denoise = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> ms_denoise = end_denoise - start_denoise;
-        printf("OptiX Denoise Time: %.3f ms\n", ms_denoise.count());
+        buildEmissiveTris();
+        if (d_emissiveTris) { cudaFree(d_emissiveTris); d_emissiveTris = nullptr; }
+        if (d_emissiveCDF)  { cudaFree(d_emissiveCDF);  d_emissiveCDF  = nullptr; }
+        if (numEmissiveTris > 0) {
+            CHECK_CUDA((cudaMalloc(&d_emissiveTris, sizeof(EmissiveTriInfo) * numEmissiveTris)), true);
+            CHECK_CUDA((cudaMemcpy(d_emissiveTris, h_emissiveTris.data(), sizeof(EmissiveTriInfo) * numEmissiveTris, cudaMemcpyHostToDevice)), true);
+            CHECK_CUDA((cudaMalloc(&d_emissiveCDF, sizeof(float) * numEmissiveTris)), true);
+            CHECK_CUDA((cudaMemcpy(d_emissiveCDF, h_emissiveCDF.data(), sizeof(float) * numEmissiveTris, cudaMemcpyHostToDevice)), true);
+        }
+    };
+#endif
 
-        cudaFree(reinterpret_cast<void*>(d_denoiserState));
-        cudaFree(reinterpret_cast<void*>(d_denoiserScratch));
-        cudaFree(reinterpret_cast<void*>(d_hdrIntensity));
-        cudaFree(reinterpret_cast<void*>(d_intensityScratch));
-        optixDenoiserDestroy(denoiser);
-        optixDeviceContextDestroy(optixCtx);
+    // ---- Frame loop ----
+    auto reinhard = [](float c) -> unsigned char {
+        float mapped = c / (1.0f + c);
+        mapped = powf(fmaxf(mapped, 0.0f), 1.0f / 2.2f);
+        return static_cast<unsigned char>(255.0f * fminf(mapped, 1.0f));
+    };
+
+    for (int frame = 0; frame < keyframes; ++frame) {
+        if (keyframes > 1)
+            printf("Rendering frame %d / %d\n", frame + 1, keyframes);
+
+        Camera frame_cam = cam;
+        if (!scene.camera_positions.empty()) {
+            Vec3 pos = sample_keyframe_vec3(scene.camera_positions, frame, keyframes);
+            Vec3 lat = scene.camera_look_ats.empty()
+                ? scene.camera.get_look_at()
+                : sample_keyframe_vec3(scene.camera_look_ats, frame, keyframes);
+            frame_cam = Camera(pos, lat,
+                scene.camera.get_up_vector(),
+                scene.camera.get_focal_length_mm(),
+                scene.camera.get_sensor_height_mm(),
+                cam.pixel_width, cam.pixel_height);
+        }
+
+        bool geometry_changed = false;
+        for (int oi = 0; oi < (int)load_objects.size(); ++oi) {
+            if (load_objects[oi].paths.empty()) continue;
+            int new_idx = animated_path_index(frame, keyframes, (int)load_objects[oi].paths.size());
+            if (new_idx != cur_path_indices[oi]) {
+                cur_path_indices[oi] = new_idx;
+                load_objects[oi].path = resolve_scene_path(load_objects[oi].paths[new_idx]);
+                geometry_changed = true;
+            }
+        }
+        if (geometry_changed) {
+            reloadAnimatedGeometry();
+#ifdef __CUDACC__
+            rebuildGPUGeometry();
+#else
+            delete[] bvh_chunk;
+            const size_t newBvhSize = required<RayTracer::BVHState>(P);
+            bvh_chunk = new char[newBvhSize];
+            bvhState = RayTracer::BVHState::fromChunk(bvh_chunk, P);
+            MeshView h_mesh_rebuild = globalMesh.getView();
+            bvh.calculateAABBs(h_mesh_rebuild, bvhState.AABBs);
+            AABB newSceneBB = std::accumulate(
+                bvhState.AABBs + (P - 1),
+                bvhState.AABBs + (2 * P - 1),
+                AABB(),
+                [](const AABB& a, const AABB& b) { return AABB::merge(a, b); });
+            std::vector<unsigned int> newTriIdx(P);
+            std::iota(newTriIdx.begin(), newTriIdx.end(), 0);
+            bvh.buildBVH(bvhState.Nodes, bvhState.AABBs, newSceneBB, newTriIdx, static_cast<int>(P));
+            buildEmissiveTris();
+#endif
+        }
+
+        const int num_om    = static_cast<int>(objectMaterials.size());
+        const int num_media = static_cast<int>(objectMediaList.size());
+
+#ifdef __CUDACC__
+        CHECK_CUDA((cudaMemset(d_image, 0, sizeof(Vec3) * img_w * img_h)), true);
+        if (use_denoiser) {
+            CHECK_CUDA((cudaMemset(d_albedo_aov, 0, sizeof(Vec3) * img_w * img_h)), true);
+            CHECK_CUDA((cudaMemset(d_normal_aov, 0, sizeof(Vec3) * img_w * img_h)), true);
+        }
+
+        auto start_render = std::chrono::high_resolution_clock::now();
+        render(P, img_w, img_h, frame_cam, miss_color, max_depth, spp, bvhState.Nodes, bvhState.AABBs, d_tris,
+               d_triangle_obj_ids, d_object_materials, num_om,
+               d_lights, num_lights, diffuse_bounce,
+               d_emissiveTris, d_emissiveCDF, numEmissiveTris, totalEmissiveArea,
+               d_image, d_albedo_aov, d_normal_aov, nee_mode,
+               d_objectMedia, num_media,
+               d_textures, numTextures,
+               d_volumeRegions, numVolumeRegions,
+               d_hdri);
+        auto end_render = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> ms_render = end_render - start_render;
+        printf("GPU Render Time: %.3f ms\n", ms_render.count());
+
+        if (use_denoiser) {
+            auto start_denoise = std::chrono::high_resolution_clock::now();
+            OPTIX_CHECK(optixInit());
+
+            CUcontext cuCtx = nullptr;
+            OptixDeviceContext optixCtx = nullptr;
+            OPTIX_CHECK(optixDeviceContextCreate(cuCtx, nullptr, &optixCtx));
+
+            OptixDenoiserOptions denoiserOptions = {};
+            denoiserOptions.guideAlbedo = 1;
+            denoiserOptions.guideNormal = 1;
+            denoiserOptions.denoiseAlpha = OPTIX_DENOISER_ALPHA_MODE_COPY;
+
+            OptixDenoiser denoiser = nullptr;
+            OPTIX_CHECK(optixDenoiserCreate(optixCtx, OPTIX_DENOISER_MODEL_KIND_HDR,
+                                            &denoiserOptions, &denoiser));
+
+            OptixDenoiserSizes denoiserSizes = {};
+            OPTIX_CHECK(optixDenoiserComputeMemoryResources(denoiser,
+                            static_cast<unsigned int>(img_w),
+                            static_cast<unsigned int>(img_h),
+                            &denoiserSizes));
+
+            CUdeviceptr d_denoiserState = 0, d_denoiserScratch = 0;
+            CHECK_CUDA((cudaMalloc(reinterpret_cast<void**>(&d_denoiserState), denoiserSizes.stateSizeInBytes)), true);
+            CHECK_CUDA((cudaMalloc(reinterpret_cast<void**>(&d_denoiserScratch), denoiserSizes.withoutOverlapScratchSizeInBytes)), true);
+
+            OPTIX_CHECK(optixDenoiserSetup(denoiser, nullptr,
+                            static_cast<unsigned int>(img_w), static_cast<unsigned int>(img_h),
+                            d_denoiserState, denoiserSizes.stateSizeInBytes,
+                            d_denoiserScratch, denoiserSizes.withoutOverlapScratchSizeInBytes));
+
+            CUdeviceptr d_hdrIntensity = 0, d_intensityScratch = 0;
+            CHECK_CUDA((cudaMalloc(reinterpret_cast<void**>(&d_hdrIntensity), sizeof(float))), true);
+            CHECK_CUDA((cudaMalloc(reinterpret_cast<void**>(&d_intensityScratch), denoiserSizes.computeIntensitySizeInBytes)), true);
+
+            auto makeImage2D = [&](CUdeviceptr ptr) -> OptixImage2D {
+                OptixImage2D img = {};
+                img.data = ptr;
+                img.width = static_cast<unsigned int>(img_w);
+                img.height = static_cast<unsigned int>(img_h);
+                img.rowStrideInBytes = static_cast<unsigned int>(img_w * sizeof(Vec3));
+                img.pixelStrideInBytes = static_cast<unsigned int>(sizeof(Vec3));
+                img.format = OPTIX_PIXEL_FORMAT_FLOAT3;
+                return img;
+            };
+
+            OptixImage2D colorImg  = makeImage2D(reinterpret_cast<CUdeviceptr>(d_image));
+            OptixImage2D albedoImg = makeImage2D(reinterpret_cast<CUdeviceptr>(d_albedo_aov));
+            OptixImage2D normalImg = makeImage2D(reinterpret_cast<CUdeviceptr>(d_normal_aov));
+
+            OPTIX_CHECK(optixDenoiserComputeIntensity(denoiser, nullptr,
+                            &colorImg, d_hdrIntensity,
+                            d_intensityScratch, denoiserSizes.computeIntensitySizeInBytes));
+
+            OptixImage2D outputImg = colorImg;
+
+            OptixDenoiserGuideLayer guideLayer = {};
+            guideLayer.albedo = albedoImg;
+            guideLayer.normal = normalImg;
+
+            OptixDenoiserLayer layer = {};
+            layer.input  = colorImg;
+            layer.output = outputImg;
+
+            OptixDenoiserParams params = {};
+            params.hdrIntensity = d_hdrIntensity;
+            params.blendFactor = 0.0f;
+            params.hdrAverageColor = 0;
+            params.temporalModeUsePreviousLayers = 0;
+
+            OPTIX_CHECK(optixDenoiserInvoke(denoiser, nullptr, &params,
+                            d_denoiserState, denoiserSizes.stateSizeInBytes,
+                            &guideLayer, &layer, 1, 0, 0,
+                            d_denoiserScratch, denoiserSizes.withoutOverlapScratchSizeInBytes));
+
+            CHECK_CUDA((cudaDeviceSynchronize()), true);
+
+            auto end_denoise = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> ms_denoise = end_denoise - start_denoise;
+            printf("OptiX Denoise Time: %.3f ms\n", ms_denoise.count());
+
+            cudaFree(reinterpret_cast<void*>(d_denoiserState));
+            cudaFree(reinterpret_cast<void*>(d_denoiserScratch));
+            cudaFree(reinterpret_cast<void*>(d_hdrIntensity));
+            cudaFree(reinterpret_cast<void*>(d_intensityScratch));
+            optixDenoiserDestroy(denoiser);
+            optixDeviceContextDestroy(optixCtx);
+        }
+
+        CHECK_CUDA((cudaMemcpy(image.data(), d_image, sizeof(Vec3) * img_w * img_h, cudaMemcpyDeviceToHost)), true);
+#else
+        std::vector<Triangle> h_tris(P);
+        for (size_t ti = 0; ti < P; ++ti) {
+            const uint32_t i0 = globalMesh.indices[ti * 3 + 0];
+            const uint32_t i1 = globalMesh.indices[ti * 3 + 1];
+            const uint32_t i2 = globalMesh.indices[ti * 3 + 2];
+            Vec3 n0 = make_vec3(0,0,0), n1 = make_vec3(0,0,0), n2 = make_vec3(0,0,0);
+            if (!globalMesh.normals.empty()) {
+                n0 = globalMesh.normals[i0]; n1 = globalMesh.normals[i1]; n2 = globalMesh.normals[i2];
+            }
+            Vec2 uv0 = make_vec2(0.0f, 0.0f), uv1 = make_vec2(0.0f, 0.0f), uv2 = make_vec2(0.0f, 0.0f);
+            if (!globalMesh.uvs.empty()) {
+                uv0 = globalMesh.uvs[i0]; uv1 = globalMesh.uvs[i1]; uv2 = globalMesh.uvs[i2];
+            }
+            h_tris[ti] = Triangle(globalMesh.positions[i0], globalMesh.positions[i1],
+                                  globalMesh.positions[i2], n0, n1, n2, uv0, uv1, uv2);
+        }
+
+        std::fill(image.begin(), image.end(), make_vec3(0.0f, 0.0f, 0.0f));
+        auto start_render = std::chrono::high_resolution_clock::now();
+        render(P, img_w, img_h, frame_cam, miss_color, max_depth, spp, bvhState.Nodes, bvhState.AABBs, h_tris.data(),
+               globalMesh.triangleObjIds.data(), objectMaterials.data(), num_om,
+               render_lights.data(), num_lights, diffuse_bounce,
+               h_emissiveTris.data(), h_emissiveCDF.data(), numEmissiveTris, totalEmissiveArea,
+               image.data(), nullptr, nullptr, nee_mode,
+               objectMediaList.data(), num_media,
+               allTextureData.data(), numTextures,
+               volumeRegionsList.data(), numVolumeRegions);
+        auto end_render = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> ms_render = end_render - start_render;
+        printf("CPU Render Time: %.3f ms\n", ms_render.count());
+#endif
+
+        const std::string fname = frame_filename(output_filename, frame, keyframes);
+        std::vector<unsigned char> img_data(num_pixels * 3);
+        for (size_t i = 0; i < num_pixels; ++i) {
+            img_data[i * 3 + 0] = reinhard(image[i].x);
+            img_data[i * 3 + 1] = reinhard(image[i].y);
+            img_data[i * 3 + 2] = reinhard(image[i].z);
+        }
+        stbi_write_png(fname.c_str(), img_w, img_h, 3, img_data.data(), img_w * 3);
+        printf("Image saved to %s\n", fname.c_str());
     }
 
-    CHECK_CUDA((cudaMemcpy(image.data(), d_image, sizeof(Vec3) * img_w * img_h, cudaMemcpyDeviceToHost)), true);
-
+#ifdef __CUDACC__
     cudaFree(d_tris);
     cudaFree(d_image);
     if (d_albedo_aov) cudaFree(d_albedo_aov);
@@ -1010,58 +1296,7 @@ int main(int argc, char** argv)
     for (auto* p : d_volumeFlamePtrs) { if (p) cudaFree(p); }
     if (d_textures) cudaFree(d_textures);
     for (auto* p : d_texPixelPtrs) { if (p) cudaFree(p); }
-#else
-    // CPU path: build triangles with UVs
-    std::vector<Triangle> h_tris(P);
-    for (size_t i = 0; i < P; ++i) {
-        const uint32_t i0 = globalMesh.indices[i * 3 + 0];
-        const uint32_t i1 = globalMesh.indices[i * 3 + 1];
-        const uint32_t i2 = globalMesh.indices[i * 3 + 2];
-
-        Vec3 n0 = make_vec3(0,0,0), n1 = make_vec3(0,0,0), n2 = make_vec3(0,0,0);
-        if (!globalMesh.normals.empty()) {
-            n0 = globalMesh.normals[i0]; n1 = globalMesh.normals[i1]; n2 = globalMesh.normals[i2];
-        }
-
-        Vec2 uv0 = make_vec2(0.0f, 0.0f);
-        Vec2 uv1 = make_vec2(0.0f, 0.0f);
-        Vec2 uv2 = make_vec2(0.0f, 0.0f);
-        if (!globalMesh.uvs.empty()) {
-            uv0 = globalMesh.uvs[i0]; uv1 = globalMesh.uvs[i1]; uv2 = globalMesh.uvs[i2];
-        }
-
-        h_tris[i] = Triangle(globalMesh.positions[i0], globalMesh.positions[i1],
-                              globalMesh.positions[i2], n0, n1, n2, uv0, uv1, uv2);
-    }
-
-    auto start_render = std::chrono::high_resolution_clock::now();
-    render(P, img_w, img_h, cam, miss_color, max_depth, spp, bvhState.Nodes, bvhState.AABBs, h_tris.data(),
-           globalMesh.triangleObjIds.data(), objectMaterials.data(), num_object_materials,
-           render_lights.data(), num_lights, diffuse_bounce,
-           h_emissiveTris.data(), h_emissiveCDF.data(), numEmissiveTris, totalEmissiveArea,
-           image.data(), nullptr, nullptr, nee_mode,
-           objectMediaList.data(), numObjectMedia,
-           allTextureData.data(), numTextures,
-           volumeRegionsList.data(), numVolumeRegions);
-    auto end_render = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> ms_render = end_render - start_render;
-    printf("CPU Render Time: %.3f ms\n", ms_render.count());
 #endif
-
-    // Write image to disk with Reinhard tone mapping.
-    auto reinhard = [](float c) -> unsigned char {
-        float mapped = c / (1.0f + c);
-        mapped = powf(fmaxf(mapped, 0.0f), 1.0f / 2.2f);
-        return static_cast<unsigned char>(255.0f * fminf(mapped, 1.0f));
-    };
-    std::vector<unsigned char> img_data(num_pixels * 3);
-    for (size_t i = 0; i < num_pixels; ++i) {
-        img_data[i * 3 + 0] = reinhard(image[i].x);
-        img_data[i * 3 + 1] = reinhard(image[i].y);
-        img_data[i * 3 + 2] = reinhard(image[i].z);
-    }
-    stbi_write_png(output_filename.c_str(), img_w, img_h, 3, img_data.data(), img_w * 3);
-    printf("Image saved to %s\n", output_filename.c_str());
 
     return 0;
 }
