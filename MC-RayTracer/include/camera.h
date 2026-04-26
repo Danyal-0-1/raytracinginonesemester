@@ -52,6 +52,51 @@ class Camera {
         return Ray(center, dir);
     }
 
+    // Forward direction (camera looks toward look_at).
+    HYBRID_FUNC vec3 get_forward() const { return unit_vector(look_at - center); }
+
+    // Project a world-space point onto the image plane (pinhole).
+    // Returns true if the point is in front of the camera AND lands inside the
+    // [0,W) x [0,H) image rectangle. Writes sub-pixel float coords (px, py) and
+    // cos_theta = forward · unit(p - center). Used by BDPT t=1 light tracing splat.
+    HYBRID_FUNC bool world_to_pixel(const point3& p, float& px, float& py, float& cos_theta) const {
+        const vec3  d        = p - center;
+        const vec3  forward  = get_forward();
+        const float dot_fd   = float(dot(forward, d));
+        const float dlen2    = float(dot(d, d));
+        if (dot_fd <= 1e-6f || dlen2 < 1e-24f) {
+            cos_theta = 0.0f;
+            return false;
+        }
+        const float dlen = sqrtf(dlen2);
+        cos_theta = dot_fd / dlen;
+
+        const float fl_m = float(focal_length_mm / 1000.0);
+        const vec3 hit_world = center + d * (fl_m / dot_fd);
+
+        const vec3 corner = pixel00_loc - 0.5 * (pixel_delta_u + pixel_delta_v);
+        const vec3 from_corner = hit_world - corner;
+
+        const float du2 = float(dot(pixel_delta_u, pixel_delta_u));
+        const float dv2 = float(dot(pixel_delta_v, pixel_delta_v));
+        if (du2 <= 0.0f || dv2 <= 0.0f) return false;
+        px = float(dot(from_corner, pixel_delta_u)) / du2;
+        py = float(dot(from_corner, pixel_delta_v)) / dv2;
+
+        return (px >= 0.0f && px < float(pixel_width)
+             && py >= 0.0f && py < float(pixel_height));
+    }
+
+    // Image-plane area projected to z=1 (camera-coord depth 1). Used in the
+    // pinhole We = 1 / (A_z1 * cos⁴θ) for BDPT t=1 splatting.
+    HYBRID_FUNC float image_area_at_z1() const {
+        const float du = sqrtf(float(dot(pixel_delta_u, pixel_delta_u)));
+        const float dv = sqrtf(float(dot(pixel_delta_v, pixel_delta_v)));
+        const float fl_m = float(focal_length_mm / 1000.0);
+        if (fl_m <= 0.0f) return 0.0f;
+        return du * dv * float(pixel_width) * float(pixel_height) / (fl_m * fl_m);
+    }
+
   private:
     point3 center;
     point3 look_at;

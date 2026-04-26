@@ -1,6 +1,7 @@
 // include/query.cu
 #include "buffers.h"
 #include "query.h"
+#include "bdpt.h"
 #include "scene.h"
 #include "shader.h"
 
@@ -41,7 +42,12 @@ renderBatchCUDA(const int numTriangles,
        int numTextures,
        const VolumeRegionGPU* __restrict__ volumeRegions,
        int numVolumeRegions,
-       const HDRTextureData* __restrict__ hdri)
+       const HDRTextureData* __restrict__ hdri,
+       // BDPT additions: integrator switch + per-pixel splat buffer for the
+       // t=1 light-tracing strategies. When use_bdpt is false the PT path
+       // (TraceRayIterative) runs unchanged; the splat_buffer is then unused.
+       const bool use_bdpt,
+       Vec3* __restrict__ splat_buffer)
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -61,23 +67,43 @@ renderBatchCUDA(const int numTriangles,
         Ray ray = cam.get_ray((float)x + jx, (float)y + jy);
 
         unsigned int rng = make_rng_seed(x, y, s);
-        Vec3 color = TraceRayIterative(
-            ray,
-            max_depth,
-            missColor,
-            numTriangles,
-            nodes, aabbs, triangles,
-            triObjectIds, objectMaterials, numObjectMaterials,
-            lights, numLights,
-            emissiveTris, emissiveCDF, numEmissiveTris, totalEmissiveArea,
-            rng,
-            diffuse_bounce,
-            nee_mode,
-            objectMedia, numObjectMedia,
-            textures, numTextures,
-            volumeRegions, numVolumeRegions,
-            hdri
-        );
+        Vec3 color;
+        if (use_bdpt) {
+            // BDPT path. lights[]/diffuse_bounce/nee_mode/objectMedia and the
+            // HDRI background aren't used by the BDPT integrator yet.
+            (void)lights; (void)numLights; (void)diffuse_bounce; (void)nee_mode;
+            (void)objectMedia; (void)numObjectMedia; (void)hdri;
+            color = bdpt_li(
+                ray,
+                max_depth,
+                missColor,
+                numTriangles,
+                nodes, aabbs, triangles,
+                triObjectIds, objectMaterials, numObjectMaterials,
+                emissiveTris, emissiveCDF, numEmissiveTris, totalEmissiveArea,
+                rng,
+                textures, numTextures,
+                volumeRegions, numVolumeRegions,
+                splat_buffer, &cam, W, H);
+        } else {
+            color = TraceRayIterative(
+                ray,
+                max_depth,
+                missColor,
+                numTriangles,
+                nodes, aabbs, triangles,
+                triObjectIds, objectMaterials, numObjectMaterials,
+                lights, numLights,
+                emissiveTris, emissiveCDF, numEmissiveTris, totalEmissiveArea,
+                rng,
+                diffuse_bounce,
+                nee_mode,
+                objectMedia, numObjectMedia,
+                textures, numTextures,
+                volumeRegions, numVolumeRegions,
+                hdri
+            );
+        }
         batch_accum = batch_accum + color;
 
         // Write AOV buffers on the very first sample
@@ -109,6 +135,22 @@ __global__ void normalizeCUDA(int W, int H, int spp, Vec3* __restrict__ output) 
     if (x >= W || y >= H) return;
     const int pix_id = y * W + x;
     output[pix_id] = output[pix_id] / float(spp);
+}
+
+// Merge BDPT t=1 light-tracing splat buffer into the output: output += splat / spp.
+// The splat buffer is accumulated unnormalized during rendering (one entry per
+// (s, t=1) strategy hit per camera sample); dividing by spp gives the average
+// per camera sample, the right per-pixel BDPT estimator since every pixel runs
+// spp independent light paths whose t=1 splats land somewhere on the image.
+__global__ void mergeSplatCUDA(int W, int H, int spp,
+                               Vec3* __restrict__ output,
+                               const Vec3* __restrict__ splat) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= W || y >= H) return;
+    const int pix_id = y * W + x;
+    Vec3 s = splat[pix_id] * (1.0f / float(spp));
+    output[pix_id] = output[pix_id] + s;
 }
 
 #endif
@@ -143,11 +185,24 @@ void render(
     int numTextures,
     const VolumeRegionGPU* __restrict__ volumeRegions,
     int numVolumeRegions,
-    const HDRTextureData* __restrict__ hdri)
+    const HDRTextureData* __restrict__ hdri,
+    // BDPT integrator switch. Default false => existing PT path is unchanged.
+    bool use_bdpt)
 {
 #ifdef __CUDACC__
     dim3 tile_grid((W + BLOCK_X - 1) / BLOCK_X, (H + BLOCK_Y - 1) / BLOCK_Y, 1);
     dim3 block(BLOCK_X, BLOCK_Y, 1);
+
+    // Allocate the BDPT t=1 splat buffer only when we're actually going to
+    // splat into it. PT runs leave splat_buffer = nullptr.
+    Vec3* d_splat = nullptr;
+    if (use_bdpt) {
+        const size_t splat_bytes = sizeof(Vec3) * size_t(W) * size_t(H);
+        if (cudaMalloc(reinterpret_cast<void**>(&d_splat), splat_bytes) != cudaSuccess)
+            d_splat = nullptr;
+        else
+            cudaMemset(d_splat, 0, splat_bytes);
+    }
 
     for (int s = 0; s < spp; s += SAMPLES_PER_BATCH) {
         int batch_end = s + SAMPLES_PER_BATCH;
@@ -181,11 +236,17 @@ void render(
             objectMedia, numObjectMedia,
             textures, numTextures,
             volumeRegions, numVolumeRegions,
-            hdri
+            hdri,
+            use_bdpt,
+            d_splat
         );
     }
 
     normalizeCUDA<<<tile_grid, block>>>(W, H, spp, output);
+    if (d_splat != nullptr) {
+        mergeSplatCUDA<<<tile_grid, block>>>(W, H, spp, output, d_splat);
+        cudaFree(d_splat);
+    }
     CHECK_CUDA((cudaDeviceSynchronize()), true);
 
 #else
@@ -207,23 +268,39 @@ void render(
                 const Ray ray = cam.get_ray(px, py);
 
                 unsigned int rng = make_rng_seed(x, y, si);
-                col = col + TraceRayIterative(
-                    ray,
-                    max_depth,
-                    missColor,
-                    triCount,
-                    nodes, aabbs, triangles,
-                    triObjectIds, objectMaterials, numObjectMaterials,
-                    lights, numLights,
-                    emissiveTris, emissiveCDF, numEmissiveTris, totalEmissiveArea,
-                    rng,
-                    diffuse_bounce,
-                    nee_mode,
-                    objectMedia, numObjectMedia,
-                    textures, numTextures,
-                    volumeRegions, numVolumeRegions,
-                    hdri
-                );
+                if (use_bdpt) {
+                    (void)lights; (void)numLights; (void)diffuse_bounce; (void)nee_mode;
+                    (void)objectMedia; (void)numObjectMedia; (void)hdri;
+                    col = col + bdpt_li(
+                        ray,
+                        max_depth,
+                        missColor,
+                        triCount,
+                        nodes, aabbs, triangles,
+                        triObjectIds, objectMaterials, numObjectMaterials,
+                        emissiveTris, emissiveCDF, numEmissiveTris, totalEmissiveArea,
+                        rng,
+                        textures, numTextures,
+                        volumeRegions, numVolumeRegions);
+                } else {
+                    col = col + TraceRayIterative(
+                        ray,
+                        max_depth,
+                        missColor,
+                        triCount,
+                        nodes, aabbs, triangles,
+                        triObjectIds, objectMaterials, numObjectMaterials,
+                        lights, numLights,
+                        emissiveTris, emissiveCDF, numEmissiveTris, totalEmissiveArea,
+                        rng,
+                        diffuse_bounce,
+                        nee_mode,
+                        objectMedia, numObjectMedia,
+                        textures, numTextures,
+                        volumeRegions, numVolumeRegions,
+                        hdri
+                    );
+                }
 
                 // Write AOVs on first sample
                 if (si == 0 && albedo_aov != nullptr && normal_aov != nullptr) {

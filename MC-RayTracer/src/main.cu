@@ -212,6 +212,7 @@ int main(int argc, char** argv)
     bool use_denoiser = false;
     std::string output_filename = "render.png";
     int nee_mode = 2;
+    bool use_bdpt = false;     // BDPT integrator opt-in: --integrator bdpt
     std::vector<char*> positional_args;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -225,12 +226,18 @@ int main(int argc, char** argv)
             else if (mode == "brdf") nee_mode = 1;
             else if (mode == "mis")  nee_mode = 2;
             else { printf("Unknown --nee-mode '%s'. Use: area, brdf, mis\n", mode.c_str()); return 1; }
+        } else if (arg == "--integrator" && i + 1 < argc) {
+            std::string mode = argv[++i];
+            if (mode == "pt")        use_bdpt = false;
+            else if (mode == "bdpt") use_bdpt = true;
+            else { printf("Unknown --integrator '%s'. Use: pt, bdpt\n", mode.c_str()); return 1; }
         } else {
             positional_args.push_back(argv[i]);
         }
     }
     const char* nee_names[] = {"area", "brdf", "mis"};
     printf("NEE mode: %s\n", nee_names[nee_mode]);
+    printf("Integrator: %s\n", use_bdpt ? "bdpt" : "pt");
     int pos_argc = static_cast<int>(positional_args.size()) + 1;
 
     std::vector<SceneObject> load_objects;
@@ -1135,7 +1142,7 @@ int main(int argc, char** argv)
                d_objectMedia, num_media,
                d_textures, numTextures,
                d_volumeRegions, numVolumeRegions,
-               d_hdri);
+               d_hdri, use_bdpt);
         auto end_render = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> ms_render = end_render - start_render;
         printf("GPU Render Time: %.3f ms\n", ms_render.count());
@@ -1258,7 +1265,8 @@ int main(int argc, char** argv)
                image.data(), nullptr, nullptr, nee_mode,
                objectMediaList.data(), num_media,
                allTextureData.data(), numTextures,
-               volumeRegionsList.data(), numVolumeRegions);
+               volumeRegionsList.data(), numVolumeRegions,
+               /*hdri=*/nullptr, use_bdpt);
         auto end_render = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> ms_render = end_render - start_render;
         printf("CPU Render Time: %.3f ms\n", ms_render.count());

@@ -306,7 +306,8 @@ void render(
     int numTextures = 0,
     const VolumeRegionGPU* __restrict__ volumeRegions = nullptr,
     int numVolumeRegions = 0,
-    const HDRTextureData* __restrict__ hdri = nullptr);
+    const HDRTextureData* __restrict__ hdri = nullptr,
+    bool use_bdpt = false);
 
 
 HYBRID_FUNC inline float rng_next(unsigned int& state) {
