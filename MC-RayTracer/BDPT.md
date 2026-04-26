@@ -35,16 +35,16 @@ make -j8
 
 For a CPU-only build (slow but useful for debugging) drop `-DENABLE_GPU=ON`.
 
-The executable is `bvh_viz` in the build dir.
+The executable is `render` in the build dir.
 
 ## Run
 
 ```bash
 # Default: existing PT integrator
-./bvh_viz <scene.json> [-o output.png] [--nee-mode mis|brdf|area] [--denoise]
+./render <scene.json> [-o output.png] [--nee-mode mis|brdf|area] [--denoise]
 
 # Opt in to BDPT:
-./bvh_viz <scene.json> --integrator bdpt [-o output.png]
+./render <scene.json> --integrator bdpt [-o output.png]
 ```
 
 `--integrator pt` is the explicit default; `--integrator bdpt` switches the kernel to the BDPT path. All other flags work the same as before.
@@ -63,13 +63,13 @@ Existing scenes under `assets/json_files/` cover the BDPT integrator's main regi
 
 ```bash
 # Surface-only Cornell box
-./bvh_viz ../../assets/json_files/cornell_area_light.json --integrator bdpt -o cornell_bdpt.png
+./render ../../assets/json_files/cornell_area_light.json --integrator bdpt -o cornell_bdpt.png
 
 # Homogeneous fog with glass
-./bvh_viz ../../assets/json_files/cornell_volume_g0.json --integrator bdpt -o fog_bdpt.png
+./render ../../assets/json_files/cornell_volume_g0.json --integrator bdpt -o fog_bdpt.png
 
 # Dense smoke with hot emission
-./bvh_viz ../../assets/json_files/cornell_smoke_embergen_120.json --integrator bdpt -o smoke_bdpt.png
+./render ../../assets/json_files/cornell_smoke_embergen_120.json --integrator bdpt -o smoke_bdpt.png
 ```
 
 Compare-and-contrast against PT by re-running the same scene without `--integrator bdpt`.
