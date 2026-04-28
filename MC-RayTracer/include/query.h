@@ -10,6 +10,7 @@
 #include "antialias.h"
 #include "medium.h"
 #include "texture.h"
+#include "environment.h"
 
 struct Light;
 
@@ -286,6 +287,7 @@ static constexpr float kEnvInvFourPi = 0.07957747154594767f;
 // different world azimuth.  az_rot is in [0,1) (fraction of 360°).
 // ----------------------------------------------------------------
 HYBRID_FUNC inline Vec3 env_light_eval(const HDRTextureData* hdri, const Vec3& dir) {
+    if (!hdri || hdri->width <= 0) return make_vec3(0.0f, 0.0f, 0.0f);
     if (hdri->az_rot == 0.0f) {
         return sampleHDRI(*hdri, dir) * hdri->tint * hdri->intensity;
     }
@@ -297,6 +299,28 @@ HYBRID_FUNC inline Vec3 env_light_eval(const HDRTextureData* hdri, const Vec3& d
                                   dir.x * sa + dir.y * ca,
                                   dir.z);
     return sampleHDRI(*hdri, rotdir) * hdri->tint * hdri->intensity;
+}
+
+HYBRID_FUNC inline bool has_procedural_infinite_light(const Environment* environment) {
+    return (environment != nullptr) && environment->enabled;
+}
+
+HYBRID_FUNC inline bool has_hdri_infinite_light(const HDRTextureData* hdri) {
+    return (hdri != nullptr) && (hdri->width > 0) && (hdri->height > 0) && (hdri->data != nullptr);
+}
+
+HYBRID_FUNC inline Vec3 infinite_light_eval(
+    const HDRTextureData* hdri,
+    const Environment* environment,
+    const Vec3& dir)
+{
+    if (has_hdri_infinite_light(hdri)) {
+        return env_light_eval(hdri, dir);
+    }
+    if (has_procedural_infinite_light(environment)) {
+        return EvaluateEnvironment(dir, *environment);
+    }
+    return make_vec3(0.0f, 0.0f, 0.0f);
 }
 
 // ----------------------------------------------------------------
@@ -339,8 +363,8 @@ HYBRID_FUNC inline float env_light_pdf(const HDRTextureData* hdri,
     const float v_img = 1.0f - v_in;                      // image row 0 = zenith
 
     const int W = imp->width, H = imp->height;
-    const int xi = fmaxf(0.0f, fminf(float(W - 1), floorf(u       * float(W))));
-    const int yi = fmaxf(0.0f, fminf(float(H - 1), floorf(v_img   * float(H))));
+    const int xi = static_cast<int>(fmaxf(0.0f, fminf(float(W - 1), floorf(u       * float(W)))));
+    const int yi = static_cast<int>(fmaxf(0.0f, fminf(float(H - 1), floorf(v_img   * float(H)))));
 
     const float pmf_val = imp->pmf[yi * W + xi];
     if (pmf_val < 1e-30f) return kEnvInvFourPi;
@@ -359,7 +383,7 @@ HYBRID_FUNC inline float env_light_pdf(const HDRTextureData* hdri,
 // to the 2D CDF; falls back to uniform sphere when imp is null.
 // Returns solid-angle PDF via pdf_out.
 // ----------------------------------------------------------------
-HYBRID_FUNC inline Vec3 env_light_sample_dir(const HDRTextureData*,
+HYBRID_FUNC inline Vec3 env_light_sample_dir(const HDRTextureData* /*hdri*/,
                                              const EnvImportanceData* imp,
                                              float u1, float u2,
                                              float& pdf_out) {
@@ -447,6 +471,7 @@ void render(
     const VolumeRegionGPU* __restrict__ volumeRegions = nullptr,
     int numVolumeRegions = 0,
     const HDRTextureData* __restrict__ hdri = nullptr,
+    const Environment* __restrict__ environment = nullptr,
     bool use_bdpt = false,
     const EnvImportanceData* __restrict__ env_importance = nullptr);
 
@@ -857,6 +882,7 @@ HYBRID_FUNC inline Vec3 TraceRayIterative(
     const VolumeRegionGPU* __restrict__ volumeRegions = nullptr,
     int numVolumeRegions = 0,
     const HDRTextureData* __restrict__ hdri = nullptr,
+    const Environment* __restrict__ environment = nullptr,
     const EnvImportanceData* __restrict__ env_importance = nullptr)
 {
     if (maxDepth <= 0) return make_vec3(0.0f, 0.0f, 0.0f);
@@ -1058,15 +1084,19 @@ HYBRID_FUNC inline Vec3 TraceRayIterative(
         // 4. No hit → sky / miss color
         // ----------------------------------------------------------------
         if (!hitRecord.hit) {
-            if (hdri && hdri->width > 0) {
-                const Vec3 Le_env = env_light_eval(hdri, ray.direction());
+            const bool has_hdri_env = has_hdri_infinite_light(hdri);
+            const bool has_proc_env = has_procedural_infinite_light(environment);
+            if (has_hdri_env || has_proc_env) {
+                const Vec3 Le_env = infinite_light_eval(hdri, environment, ray.direction());
                 // MIS BSDF strategy: weight against the light-sampling strategy
                 // only on bounced rays (depth > 0) where we could have taken the
                 // light strategy instead.  First hit and delta surfaces always
                 // get the full contribution (no double-counting).
                 if (nee_mode == 2 && !prev_delta && !prev_medium_event
                         && depth > 0 && prev_pdf > 1e-6f) {
-                    const float pdf_env = env_light_pdf(hdri, env_importance, ray.direction());
+                    const float pdf_env = has_hdri_env
+                        ? env_light_pdf(hdri, env_importance, ray.direction())
+                        : kEnvInvFourPi;
                     const float w_bsdf  = power_heuristic(prev_pdf, pdf_env);
                     radiance = radiance + throughput * Le_env * w_bsdf;
                 } else {
@@ -1268,18 +1298,21 @@ HYBRID_FUNC inline Vec3 TraceRayIterative(
         //     ray, and accumulate with power-heuristic weight against the
         //     BSDF strategy.  Only active in MIS mode (nee_mode == 2).
         // ----------------------------------------------------------------
-        if (hdri && hdri->width > 0 && nee_mode == 2) {
+        if (nee_mode == 2 && (has_hdri_infinite_light(hdri) || has_procedural_infinite_light(environment))) {
             const float xi1 = rng_next(rng_state);
             const float xi2 = rng_next(rng_state);
             float pdf_L;
-            const Vec3 wi_L = env_light_sample_dir(hdri, env_importance, xi1, xi2, pdf_L);
+            const Vec3 wi_L = env_light_sample_dir(
+                hdri,
+                has_hdri_infinite_light(hdri) ? env_importance : nullptr,
+                xi1, xi2, pdf_L);
             const float NdotL = fmaxf(dot(N, wi_L), 0.0f);
             if (NdotL > 1e-6f && pdf_L > 1e-10f) {
                 Ray shadowEnvRay(hitRecord.p + N * RT_EPS, wi_L);
                 HitRecord shadowEnvHit; shadowEnvHit.hit = false;
                 SearchBVH(numTriangles, shadowEnvRay, nodes, aabbs, triangles, shadowEnvHit);
                 if (!shadowEnvHit.hit) {
-                    const Vec3  Le    = env_light_eval(hdri, wi_L);
+                    const Vec3  Le    = infinite_light_eval(hdri, environment, wi_L);
                     const Vec3  f     = EvaluateBRDF(hitRecord, Vo, wi_L);
                     const float pdf_B = BRDFSamplingPdf(hitRecord, Vo, wi_L, diffuse_bounce);
                     const float w_L   = power_heuristic(pdf_L, pdf_B);

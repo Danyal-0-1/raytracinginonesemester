@@ -825,8 +825,13 @@ int main(int argc, char** argv)
     HDRTextureData* d_hdri = nullptr;  // device pointer to HDRTextureData struct
     float*          d_hdri_pixels = nullptr;
     HDRTexture*     hdri_owner = nullptr;
+    Environment*    d_environment = nullptr;
+    EnvImportanceData* d_env_imp = nullptr;
+    float* d_env_row_cdf = nullptr;
+    float* d_env_col_cdf = nullptr;
+    float* d_env_pmf     = nullptr;
 
-    if (!scene.sky_hdri_path.empty()) {
+    if (scene.sky_hdri_enabled && !scene.sky_hdri_path.empty()) {
         hdri_owner = LoadHDRTexture(scene.sky_hdri_path);
         if (hdri_owner) {
             size_t floatBytes = (size_t)hdri_owner->width * hdri_owner->height * 3 * sizeof(float);
@@ -846,7 +851,49 @@ int main(int argc, char** argv)
             CHECK_CUDA((cudaMalloc(&d_hdri, sizeof(HDRTextureData))), true);
             CHECK_CUDA((cudaMemcpy(d_hdri, &dev_hdri,
                                    sizeof(HDRTextureData), cudaMemcpyHostToDevice)), true);
+
+            // Build 2D importance distribution on host then upload to device.
+            const float az = scene.environment.map_rotation_deg / 360.0f;
+            HDRTextureData host_view = hdri_owner->sampled;
+            host_view.tint      = scene.environment.tint;
+            host_view.intensity = scene.environment.map_intensity;
+            host_view.az_rot    = az;
+            EnvImportanceMaps env_imp_maps_gpu = BuildEnvImportance(host_view, az);
+            if (env_imp_maps_gpu.view.valid) {
+                const int iW = env_imp_maps_gpu.view.width;
+                const int iH = env_imp_maps_gpu.view.height;
+                printf("[Lighting]   env importance map (GPU): %dx%d pixels, az_rot=%.4f\n", iW, iH, az);
+
+                const size_t row_bytes = sizeof(float) * (size_t(iH) + 1u);
+                const size_t col_bytes = sizeof(float) * size_t(iH) * size_t(iW + 1);
+                const size_t pmf_bytes = sizeof(float) * size_t(iW) * size_t(iH);
+
+                CHECK_CUDA((cudaMalloc(&d_env_row_cdf, row_bytes)), true);
+                CHECK_CUDA((cudaMalloc(&d_env_col_cdf, col_bytes)), true);
+                CHECK_CUDA((cudaMalloc(&d_env_pmf,     pmf_bytes)), true);
+                CHECK_CUDA((cudaMemcpy(d_env_row_cdf, env_imp_maps_gpu.row_cdf_data.data(), row_bytes, cudaMemcpyHostToDevice)), true);
+                CHECK_CUDA((cudaMemcpy(d_env_col_cdf, env_imp_maps_gpu.col_cdf_data.data(), col_bytes, cudaMemcpyHostToDevice)), true);
+                CHECK_CUDA((cudaMemcpy(d_env_pmf,     env_imp_maps_gpu.pmf_data.data(),     pmf_bytes, cudaMemcpyHostToDevice)), true);
+
+                EnvImportanceData dev_imp;
+                dev_imp.width   = iW;
+                dev_imp.height  = iH;
+                dev_imp.valid   = true;
+                dev_imp.az_rot  = az;
+                dev_imp.row_cdf = d_env_row_cdf;
+                dev_imp.col_cdf = d_env_col_cdf;
+                dev_imp.pmf     = d_env_pmf;
+                CHECK_CUDA((cudaMalloc(&d_env_imp, sizeof(EnvImportanceData))), true);
+                CHECK_CUDA((cudaMemcpy(d_env_imp, &dev_imp, sizeof(EnvImportanceData), cudaMemcpyHostToDevice)), true);
+            }
         }
+    }
+
+    {
+        Environment env_upload = scene.environment;
+        env_upload.latlong_map = nullptr;
+        CHECK_CUDA((cudaMalloc(&d_environment, sizeof(Environment))), true);
+        CHECK_CUDA((cudaMemcpy(d_environment, &env_upload, sizeof(Environment), cudaMemcpyHostToDevice)), true);
     }
 
 #else
@@ -855,7 +902,7 @@ int main(int argc, char** argv)
 
     HDRTexture*    h_hdri_owner = nullptr;
     HDRTextureData h_hdri_data{};
-    if (!scene.sky_hdri_path.empty()) {
+    if (scene.sky_hdri_enabled && !scene.sky_hdri_path.empty()) {
         h_hdri_owner = LoadHDRTexture(scene.sky_hdri_path);
         if (h_hdri_owner) {
             h_hdri_data           = h_hdri_owner->sampled;
@@ -982,14 +1029,13 @@ int main(int argc, char** argv)
                        l.color.x, l.color.y, l.color.z, l.intensity);
             }
         }
-        if (!scene.sky_hdri_path.empty()) {
+        if (scene.sky_hdri_enabled && !scene.sky_hdri_path.empty()) {
             printf("[Lighting]   hdri path=%s\n", scene.sky_hdri_path.c_str());
             printf("[Lighting]   hdri tint=(%.2f,%.2f,%.2f)  intensity=%.3f\n",
                    scene.environment.tint.x, scene.environment.tint.y, scene.environment.tint.z,
                    scene.environment.map_intensity);
         } else {
-            printf("[Lighting]   no HDRI — using miss color (%.2f,%.2f,%.2f)\n",
-                   scene.miss_color.x, scene.miss_color.y, scene.miss_color.z);
+            printf("[Lighting]   HDRI disabled; using procedural infinite environment\n");
         }
     }
 
@@ -1158,7 +1204,7 @@ int main(int argc, char** argv)
            d_objectMedia, numObjectMedia,
            d_textures, numTextures,
            d_volumeRegions, numVolumeRegions,
-           d_hdri);
+           d_hdri, d_environment, use_bdpt, nullptr);
 
     auto rebuildGPUGeometry = [&]() {
         cudaFree(d_positions);
@@ -1320,7 +1366,7 @@ int main(int argc, char** argv)
                d_objectMedia, num_media,
                d_textures, numTextures,
                d_volumeRegions, numVolumeRegions,
-               d_hdri, use_bdpt);
+               d_hdri, d_environment, use_bdpt, d_env_imp);
         auto end_render = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> ms_render = end_render - start_render;
         printf("GPU Render Time: %.3f ms\n", ms_render.count());
@@ -1444,7 +1490,9 @@ int main(int argc, char** argv)
                objectMediaList.data(), num_media,
                allTextureData.data(), numTextures,
                volumeRegionsList.data(), numVolumeRegions,
-               /*hdri=*/(h_hdri_data.width > 0 ? &h_hdri_data : nullptr), use_bdpt,
+               /*hdri=*/(h_hdri_data.width > 0 ? &h_hdri_data : nullptr),
+               /*environment=*/&scene.environment,
+               use_bdpt,
                /*env_importance=*/h_env_imp);
         auto end_render = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> ms_render = end_render - start_render;
@@ -1485,6 +1533,11 @@ int main(int argc, char** argv)
     for (auto* p : d_texPixelPtrs) { if (p) cudaFree(p); }
     if (d_hdri_pixels) cudaFree(d_hdri_pixels);
     if (d_hdri)        cudaFree(d_hdri);
+    if (d_environment) cudaFree(d_environment);
+    if (d_env_row_cdf) cudaFree(d_env_row_cdf);
+    if (d_env_col_cdf) cudaFree(d_env_col_cdf);
+    if (d_env_pmf)     cudaFree(d_env_pmf);
+    if (d_env_imp)     cudaFree(d_env_imp);
     delete hdri_owner;
 #endif
 

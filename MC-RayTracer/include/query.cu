@@ -43,11 +43,13 @@ renderBatchCUDA(const int numTriangles,
        const VolumeRegionGPU* __restrict__ volumeRegions,
        int numVolumeRegions,
        const HDRTextureData* __restrict__ hdri,
+       const Environment* __restrict__ environment,
        // BDPT additions: integrator switch + per-pixel splat buffer for the
        // t=1 light-tracing strategies. When use_bdpt is false the PT path
        // (TraceRayIterative) runs unchanged; the splat_buffer is then unused.
        const bool use_bdpt,
-       Vec3* __restrict__ splat_buffer)
+       Vec3* __restrict__ splat_buffer,
+       const EnvImportanceData* __restrict__ env_importance)
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -72,7 +74,7 @@ renderBatchCUDA(const int numTriangles,
             // BDPT path. lights[]/diffuse_bounce/nee_mode/objectMedia and the
             // HDRI background aren't used by the BDPT integrator yet.
             (void)lights; (void)numLights; (void)diffuse_bounce; (void)nee_mode;
-            (void)objectMedia; (void)numObjectMedia; (void)hdri;
+            (void)objectMedia; (void)numObjectMedia; (void)hdri; (void)environment;
             color = bdpt_li(
                 ray,
                 max_depth,
@@ -101,7 +103,9 @@ renderBatchCUDA(const int numTriangles,
                 objectMedia, numObjectMedia,
                 textures, numTextures,
                 volumeRegions, numVolumeRegions,
-                hdri
+                hdri,
+                environment,
+                env_importance
             );
         }
         batch_accum = batch_accum + color;
@@ -186,6 +190,7 @@ void render(
     const VolumeRegionGPU* __restrict__ volumeRegions,
     int numVolumeRegions,
     const HDRTextureData* __restrict__ hdri,
+    const Environment* __restrict__ environment,
     // BDPT integrator switch. Default false => existing PT path is unchanged.
     bool use_bdpt,
     const EnvImportanceData* __restrict__ env_importance)
@@ -238,8 +243,10 @@ void render(
             textures, numTextures,
             volumeRegions, numVolumeRegions,
             hdri,
+            environment,
             use_bdpt,
-            d_splat
+            d_splat,
+            env_importance
         );
     }
 
@@ -271,7 +278,7 @@ void render(
                 unsigned int rng = make_rng_seed(x, y, si);
                 if (use_bdpt) {
                     (void)lights; (void)numLights; (void)diffuse_bounce; (void)nee_mode;
-                    (void)objectMedia; (void)numObjectMedia; (void)hdri;
+                    (void)objectMedia; (void)numObjectMedia; (void)hdri; (void)environment;
                     col = col + bdpt_li(
                         ray,
                         max_depth,
@@ -300,6 +307,7 @@ void render(
                         textures, numTextures,
                         volumeRegions, numVolumeRegions,
                         hdri,
+                        environment,
                         env_importance
                     );
                 }

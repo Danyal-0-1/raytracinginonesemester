@@ -1,7 +1,7 @@
 {
   "settings": {
     "max_bounces": 4,
-    "spp": 100
+    "spp": 20
   },
   "miss_color": [0.22, 0.30, 0.45],
   "camera": {
@@ -16,7 +16,8 @@
     "enabled": true,
     "preset": "custom",
     "use_physical_sky": false,
-    "hdri_path": "./assets/meshes/",
+    "hdri_enabled": false,
+    "hdri_path": "./assets/meshes/sky_hdr_sunrise.hdr",
 
     "sun_dir": [-0.976, 0.091, 0.055],
     "sun_intensity": 6.5,
@@ -63,7 +64,7 @@
       "enabled": true,
       "hdri_path": "./assets/meshes/sky_hdr_sunrise.hdr",
       "intensity_scale": 1.0,
-      "tint": [1.0, 1.0, 1.0],
+      "tint": [2.0, 1.2, 1.4],
       "importance_sampling_resolution": 512,
       "rotation_euler_deg": [0.0, 0.0, 0.0]
     }

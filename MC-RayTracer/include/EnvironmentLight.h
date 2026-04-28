@@ -12,7 +12,6 @@ struct EnvironmentLightParams {
     std::string hdri_path;
     float intensity_scale = 1.0f;
     Vec3f tint = make_vec3(1.0f, 1.0f, 1.0f);
-    std::array<int, 2> importance_sampling_resolution{1024, 512};
     Vec3f rotation_euler_deg = make_vec3(0.0f, 0.0f, 0.0f);
 };
 
@@ -48,8 +47,8 @@ private:
     EnvironmentLightParams params_{};
     Environment env_{};
 
-    std::vector<unsigned char> map_pixels_;
-    TextureData map_view_{};
+    std::vector<float> map_pixels_;
+    HDRTextureData map_view_{};
 
     ImportanceDistribution dist_{};
 

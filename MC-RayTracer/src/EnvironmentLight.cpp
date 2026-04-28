@@ -90,7 +90,7 @@ bool EnvironmentLight::HasMap() const {
 
 bool EnvironmentLight::LoadLatLongMap(const std::string& path) {
     int w = 0, h = 0, c = 0;
-    unsigned char* pixels = stbi_load(path.c_str(), &w, &h, &c, 3);
+    float* pixels = stbi_loadf(path.c_str(), &w, &h, &c, 3);
     if (!pixels || w <= 0 || h <= 0) {
         std::fprintf(stderr, "[EnvironmentLight] Failed to load hdri_path='%s'\n", path.c_str());
         return false;
@@ -100,11 +100,12 @@ bool EnvironmentLight::LoadLatLongMap(const std::string& path) {
     map_pixels_.assign(pixels, pixels + count);
     stbi_image_free(pixels);
 
-    map_view_.width = w;
-    map_view_.height = h;
-    map_view_.channels = 3;
-    map_view_.data = map_pixels_.data();
-    env_.latlong_map = &map_view_;
+    map_view_.width     = w;
+    map_view_.height    = h;
+    map_view_.data      = map_pixels_.data();
+    map_view_.tint      = params_.tint;
+    map_view_.intensity = params_.intensity_scale;
+    map_view_.az_rot    = 0.0f; // rotation handled by world_to_env_ matrix
     return true;
 }
 
@@ -136,7 +137,14 @@ Vec3f EnvironmentLight::WorldToEnv(const Vec3f& d) const {
 
 Vec3f EnvironmentLight::EvalLatLong(const Vec3f& wi_env) const {
     if (!HasMap() || !env_.enabled) return make_vec3(0.0f, 0.0f, 0.0f);
-    return EvaluateEnvironment(wi_env, env_);
+    // Use sampleHDRI UV convention (u=atan2(y,x)) for consistency with the render loop.
+    // Rotation is already baked into wi_env via world_to_env_ matrix (az_rot=0 in map_view_).
+    constexpr float INV_2PI = 0.15915494309f;
+    constexpr float INV_PI  = 0.31830988618f;
+    const float dz = fminf(fmaxf(wi_env.z, -1.0f), 1.0f);
+    const float u  = 0.5f + atan2f(wi_env.y, wi_env.x) * INV_2PI;
+    const float v  = 0.5f + asinf(dz) * INV_PI;
+    return map_view_.sample(u, v) * params_.tint * params_.intensity_scale;
 }
 
 void EnvironmentLight::BuildImportanceDistribution() {
@@ -161,8 +169,8 @@ void EnvironmentLight::BuildImportanceDistribution() {
         float row_sum = 0.0f;
 
         for (int x = 0; x < w; ++x) {
-            Vec3f c = env_sample_latlong_texel(&map_view_, x, y);
-            c = c * params_.tint;
+            const float* pix = map_pixels_.data() + (static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)) * 3u;
+            Vec3f c = make_vec3(pix[0], pix[1], pix[2]) * params_.tint;
             const float weight = fmaxf(luminance709(c), 0.0f) * sin_theta;
             dist_.pmf[static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)] = weight;
             row_sum += weight;

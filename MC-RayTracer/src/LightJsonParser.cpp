@@ -1,7 +1,6 @@
 #include "LightJsonParser.h"
 
 #include <algorithm>
-#include <array>
 #include <cstdio>
 #include <optional>
 #include <string>
@@ -37,24 +36,6 @@ std::optional<Vec3f> read_vec3(const SceneIO::JsonValue& obj, const char* key) {
     return out;
 }
 
-std::optional<std::array<int, 2>> read_res2(const SceneIO::JsonValue& obj, const char* key) {
-    const SceneIO::JsonValue* v = nullptr;
-    if (!SceneIO::json_get(obj, key, &v)) return std::nullopt;
-
-    if (v->type == SceneIO::JsonValue::Type::Number) {
-        const int s = std::max(1, static_cast<int>(v->num));
-        return std::array<int, 2>{s, std::max(1, s / 2)};
-    }
-
-    if (v->type == SceneIO::JsonValue::Type::Array && v->arr.size() == 2 &&
-        v->arr[0].type == SceneIO::JsonValue::Type::Number &&
-        v->arr[1].type == SceneIO::JsonValue::Type::Number) {
-        const int w = std::max(1, static_cast<int>(v->arr[0].num));
-        const int h = std::max(1, static_cast<int>(v->arr[1].num));
-        return std::array<int, 2>{w, h};
-    }
-    return std::nullopt;
-}
 
 bool parse_environment_light_params(const SceneIO::JsonValue& item,
                                     EnvironmentLightParams& out,
@@ -69,7 +50,6 @@ bool parse_environment_light_params(const SceneIO::JsonValue& item,
     if (const auto intensity = read_number(item, "intensity_scale")) out.intensity_scale = *intensity;
     if (const auto tint = read_vec3(item, "tint")) out.tint = *tint;
     if (const auto rot = read_vec3(item, "rotation_euler_deg")) out.rotation_euler_deg = *rot;
-    if (const auto res = read_res2(item, "importance_sampling_resolution")) out.importance_sampling_resolution = *res;
 
     if (out.enabled && out.hdri_path.empty()) {
         err = "environment_light requires non-empty 'hdri_path' when enabled=true";

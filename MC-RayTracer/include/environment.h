@@ -370,7 +370,7 @@ HYBRID_FUNC inline Vec3 EvaluateLatLongEnvironment(const Vec3& dir_in,
     const Vec3 d = env_safe_normalize(dir_in, make_vec3(0.0f, 1.0f, 0.0f));
     const float rot = env.map_rotation_deg * (1.0f / 360.0f);
 
-    float u = atan2f(d.x, d.y) * kInv2Pi + 0.5f + rot;
+    float u = atan2f(d.y, d.x) * kInv2Pi + 0.5f + rot;
     u = env_fract(u);
     const float z = env_clampf(d.z, -1.0f, 1.0f);
     const float v = acosf(z) * kInvPi;

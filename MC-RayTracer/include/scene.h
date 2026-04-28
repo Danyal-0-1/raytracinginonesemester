@@ -138,6 +138,7 @@ struct Scene {
     SceneSettings settings;
     Camera camera;
     Vec3 miss_color = make_vec3(0.0f, 0.0f, 0.0f);
+    bool sky_hdri_enabled = true;
     std::string sky_hdri_path;   // optional equirectangular HDR sky map
     Environment environment;
     std::vector<Light> lights;
@@ -464,7 +465,7 @@ inline void parse_volume_density(const JsonValue& medObj, VolumeRegion& vol) {
     }
 }
 
-inline void parse_environment_block(const JsonValue& envObj, Environment& env, std::string& sky_hdri_path) {
+inline void parse_environment_block(const JsonValue& envObj, Environment& env, std::string& sky_hdri_path, bool& sky_hdri_enabled) {
     const JsonValue* v = nullptr;
 
     if (json_get(envObj, "enabled", &v) && v->type == JsonValue::Type::Bool)
@@ -475,7 +476,14 @@ inline void parse_environment_block(const JsonValue& envObj, Environment& env, s
         ApplyEnvironmentPreset(env, p);
     }
 
-    if (json_get(envObj, "hdri_path", &v) && v->type == JsonValue::Type::String)
+    if (json_get(envObj, "hdri_enabled", &v) && v->type == JsonValue::Type::Bool) {
+        sky_hdri_enabled = v->b;
+        if (!sky_hdri_enabled) {
+            sky_hdri_path.clear();
+        }
+    }
+
+    if (sky_hdri_enabled && json_get(envObj, "hdri_path", &v) && v->type == JsonValue::Type::String)
         sky_hdri_path = v->str;
 
     if (json_get(envObj, "use_physical_sky", &v) && v->type == JsonValue::Type::Bool)
@@ -542,6 +550,8 @@ inline void parse_environment_block(const JsonValue& envObj, Environment& env, s
         env.exposure = static_cast<float>(v->num);
     if (json_get(envObj, "debug_mode", &v) && v->type == JsonValue::Type::Number)
         env.debug_mode = static_cast<EnvironmentDebugMode>(static_cast<int>(v->num));
+    if (json_get(envObj, "map_rotation_deg", &v) && v->type == JsonValue::Type::Number)
+        env.map_rotation_deg = static_cast<float>(v->num);
 
     env.sun_dir  = env_safe_normalize(env.sun_dir,  make_vec3(0.0f, 1.0f, 0.0f));
     env.moon_dir = env_safe_normalize(env.moon_dir, make_vec3(0.0f, 0.0f, 1.0f));
@@ -593,7 +603,7 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
     const JsonValue* environment = nullptr;
     if (json_get(root, "environment", &environment) &&
         environment->type == JsonValue::Type::Object) {
-        parse_environment_block(*environment, scene.environment, scene.sky_hdri_path);
+        parse_environment_block(*environment, scene.environment, scene.sky_hdri_path, scene.sky_hdri_enabled);
     }
 
     const JsonValue* camera = nullptr;
@@ -745,9 +755,13 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
                 const JsonValue* v = nullptr;
                 // "enabled" here gates only the HDRI map, not the whole environment.
                 // Sun fallback (and scene.environment.enabled) stays active regardless.
-                bool hdri_enabled = true;
+                bool hdri_enabled = scene.sky_hdri_enabled;
                 if (json_get(item, "enabled", &v) && v->type == JsonValue::Type::Bool)
-                    hdri_enabled = v->b;
+                    hdri_enabled = scene.sky_hdri_enabled && v->b;
+                scene.sky_hdri_enabled = hdri_enabled;
+                if (!scene.sky_hdri_enabled) {
+                    scene.sky_hdri_path.clear();
+                }
                 if (hdri_enabled && json_get(item, "hdri_path", &v) && v->type == JsonValue::Type::String)
                     scene.sky_hdri_path = v->str;
                 if (json_get(item, "intensity_scale", &v) && v->type == JsonValue::Type::Number)
