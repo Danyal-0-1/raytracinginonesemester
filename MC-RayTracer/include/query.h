@@ -276,6 +276,146 @@ HYBRID_FUNC inline Vec3 sampleHDRI(const HDRTextureData& hdri, const Vec3& dir) 
     return hdri.sample(u, v);
 }
 
+// Uniform-sphere PDF for infinite environment light (1 / 4π).
+static constexpr float kEnvInvFourPi = 0.07957747154594767f;
+
+// ----------------------------------------------------------------
+// env_light_eval — sample float HDR radiance in world direction dir,
+// applying the az_rot rotation, tint, and intensity scale.
+// The rotation shifts the azimuth so the image column 0 maps to a
+// different world azimuth.  az_rot is in [0,1) (fraction of 360°).
+// ----------------------------------------------------------------
+HYBRID_FUNC inline Vec3 env_light_eval(const HDRTextureData* hdri, const Vec3& dir) {
+    if (hdri->az_rot == 0.0f) {
+        return sampleHDRI(*hdri, dir) * hdri->tint * hdri->intensity;
+    }
+    constexpr float TWO_PI = 6.28318530717958647692f;
+    const float ang = hdri->az_rot * TWO_PI;
+    const float ca  = cosf(ang), sa = sinf(ang);
+    // Rotate direction +az_rot*2π around Z so the shifted image column lines up
+    const Vec3 rotdir = make_vec3(dir.x * ca - dir.y * sa,
+                                  dir.x * sa + dir.y * ca,
+                                  dir.z);
+    return sampleHDRI(*hdri, rotdir) * hdri->tint * hdri->intensity;
+}
+
+// ----------------------------------------------------------------
+// Inline binary-search into a normalised CDF array of length n+1.
+// Returns the bin index in [0, n-1] and the remapped intra-bin u.
+// ----------------------------------------------------------------
+HYBRID_FUNC inline int env_cdf_sample(const float* cdf, int n, float u, float& remapped) {
+    // clamp to avoid upper_bound edge effects
+    u = fmaxf(0.0f, fminf(u, 0.99999994f));
+    int lo = 0, hi = n - 1;
+    while (lo < hi) {
+        const int mid = (lo + hi + 1) >> 1;
+        if (cdf[mid] <= u) lo = mid;
+        else               hi = mid - 1;
+    }
+    const float c0 = cdf[lo], c1 = cdf[lo + 1];
+    remapped = (c1 > c0) ? fmaxf(0.0f, fminf(1.0f, (u - c0) / (c1 - c0))) : 0.5f;
+    return lo;
+}
+
+// ----------------------------------------------------------------
+// env_light_pdf — solid-angle PDF for world direction wi.
+// Uses the 2D importance map when available; falls back to 1/(4π).
+// ----------------------------------------------------------------
+HYBRID_FUNC inline float env_light_pdf(const HDRTextureData* hdri,
+                                       const EnvImportanceData* imp,
+                                       const Vec3& wi) {
+    if (!imp || !imp->valid || !imp->pmf || imp->width <= 0 || imp->height <= 0)
+        return kEnvInvFourPi;
+
+    constexpr float INV_2PI = 0.15915494309f;
+    constexpr float INV_PI  = 0.31830988618f;
+    constexpr float PI      = 3.14159265359f;
+
+    // Map wi to image UV in sampleHDRI convention, then apply rotation
+    const float dz = fminf(fmaxf(wi.z, -1.0f), 1.0f);
+    float u    = 0.5f + atan2f(wi.y, wi.x) * INV_2PI + imp->az_rot;
+    u          = u - floorf(u);                            // wrap to [0,1)
+    const float v_in  = 0.5f + asinf(dz) * INV_PI;
+    const float v_img = 1.0f - v_in;                      // image row 0 = zenith
+
+    const int W = imp->width, H = imp->height;
+    const int xi = fmaxf(0.0f, fminf(float(W - 1), floorf(u       * float(W))));
+    const int yi = fmaxf(0.0f, fminf(float(H - 1), floorf(v_img   * float(H))));
+
+    const float pmf_val = imp->pmf[yi * W + xi];
+    if (pmf_val < 1e-30f) return kEnvInvFourPi;
+
+    // Solid-angle element for this pixel: dω = 2π² · sin_theta / (W·H)
+    // sin_theta = cos(π · (v_in_centre – 0.5)) evaluated at the pixel centre
+    const float v_in_c    = 1.0f - (float(yi) + 0.5f) / float(H);
+    const float sin_theta = fabsf(cosf(PI * (v_in_c - 0.5f)));
+    if (sin_theta < 1e-6f) return kEnvInvFourPi;
+    const float d_omega   = 2.0f * PI * PI * sin_theta / float(W * H);
+    return pmf_val / d_omega;
+}
+
+// ----------------------------------------------------------------
+// env_light_sample_dir — sample a world-space direction according
+// to the 2D CDF; falls back to uniform sphere when imp is null.
+// Returns solid-angle PDF via pdf_out.
+// ----------------------------------------------------------------
+HYBRID_FUNC inline Vec3 env_light_sample_dir(const HDRTextureData*,
+                                             const EnvImportanceData* imp,
+                                             float u1, float u2,
+                                             float& pdf_out) {
+    constexpr float TWO_PI = 6.28318530717958647692f;
+    constexpr float PI     = 3.14159265359f;
+
+    // ---- Uniform sphere fallback ----
+    if (!imp || !imp->valid || !imp->row_cdf || !imp->col_cdf || !imp->pmf
+            || imp->width <= 0 || imp->height <= 0) {
+        const float cos_theta = 1.0f - 2.0f * u1;
+        const float sin_theta = sqrtf(fmaxf(0.0f, 1.0f - cos_theta * cos_theta));
+        const float phi = TWO_PI * u2;
+        pdf_out = kEnvInvFourPi;
+        return make_vec3(sin_theta * cosf(phi), sin_theta * sinf(phi), cos_theta);
+    }
+
+    const int W = imp->width, H = imp->height;
+
+    // ---- Step 1: sample row from marginal CDF ----
+    float uy = 0.0f;
+    const int yi = env_cdf_sample(imp->row_cdf, H, u1, uy);
+
+    // ---- Step 2: sample column from conditional CDF ----
+    const int row_off = yi * (W + 1);
+    float ux = 0.0f;
+    const int xi = env_cdf_sample(imp->col_cdf + row_off, W, u2, ux);
+
+    // ---- Step 3: pixel → UV in image space ----
+    const float u_img   = (float(xi) + ux) / float(W);   // [0,1)
+    const float v_img   = (float(yi) + uy) / float(H);   // [0,1), row 0 = zenith
+
+    // Remove rotation: world-azimuth u = u_img - az_rot
+    float u_world = u_img - imp->az_rot;
+    u_world = u_world - floorf(u_world);
+
+    // ---- Step 4: UV → world direction ----
+    // v_in = 1 - v_img  (flip: v_in=1 at zenith, 0 at nadir)
+    // z    = sin(π · (v_in – 0.5))
+    // phi  = 2π · (u_world – 0.5)
+    const float v_in = 1.0f - v_img;
+    const float z    = sinf(PI * (v_in - 0.5f));
+    const float r    = sqrtf(fmaxf(0.0f, 1.0f - z * z));   // sin_theta
+    const float phi  = TWO_PI * (u_world - 0.5f);
+    const Vec3 wi    = make_vec3(r * cosf(phi), r * sinf(phi), z);
+
+    // ---- Step 5: solid-angle PDF ----
+    const float pmf_val = imp->pmf[yi * W + xi];
+    if (pmf_val < 1e-30f || r < 1e-6f) {
+        pdf_out = kEnvInvFourPi;
+    } else {
+        const float d_omega = 2.0f * PI * PI * r / float(W * H);
+        pdf_out = pmf_val / d_omega;
+    }
+    return wi;
+}
+
 void render(
     const size_t numTriangles,
     int W, int H,
@@ -307,7 +447,8 @@ void render(
     const VolumeRegionGPU* __restrict__ volumeRegions = nullptr,
     int numVolumeRegions = 0,
     const HDRTextureData* __restrict__ hdri = nullptr,
-    bool use_bdpt = false);
+    bool use_bdpt = false,
+    const EnvImportanceData* __restrict__ env_importance = nullptr);
 
 
 HYBRID_FUNC inline float rng_next(unsigned int& state) {
@@ -715,7 +856,8 @@ HYBRID_FUNC inline Vec3 TraceRayIterative(
     int numTextures = 0,
     const VolumeRegionGPU* __restrict__ volumeRegions = nullptr,
     int numVolumeRegions = 0,
-    const HDRTextureData* __restrict__ hdri = nullptr)
+    const HDRTextureData* __restrict__ hdri = nullptr,
+    const EnvImportanceData* __restrict__ env_importance = nullptr)
 {
     if (maxDepth <= 0) return make_vec3(0.0f, 0.0f, 0.0f);
 
@@ -916,10 +1058,23 @@ HYBRID_FUNC inline Vec3 TraceRayIterative(
         // 4. No hit → sky / miss color
         // ----------------------------------------------------------------
         if (!hitRecord.hit) {
-            Vec3 sky = (hdri && hdri->width > 0)
-                       ? sampleHDRI(*hdri, ray.direction())
-                       : missColor;
-            radiance = radiance + throughput * sky;
+            if (hdri && hdri->width > 0) {
+                const Vec3 Le_env = env_light_eval(hdri, ray.direction());
+                // MIS BSDF strategy: weight against the light-sampling strategy
+                // only on bounced rays (depth > 0) where we could have taken the
+                // light strategy instead.  First hit and delta surfaces always
+                // get the full contribution (no double-counting).
+                if (nee_mode == 2 && !prev_delta && !prev_medium_event
+                        && depth > 0 && prev_pdf > 1e-6f) {
+                    const float pdf_env = env_light_pdf(hdri, env_importance, ray.direction());
+                    const float w_bsdf  = power_heuristic(prev_pdf, pdf_env);
+                    radiance = radiance + throughput * Le_env * w_bsdf;
+                } else {
+                    radiance = radiance + throughput * Le_env;
+                }
+            } else {
+                radiance = radiance + throughput * missColor;
+            }
             break;
         }
 
@@ -1103,6 +1258,32 @@ HYBRID_FUNC inline Vec3 TraceRayIterative(
                         radiance = radiance + throughput *
                                    (Le_nee * f_nee * (NdotL_nee / pdf_combined) * Tr_nee * w_nee);
                     }
+                }
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // 7b. Environment light direct sampling (light-strategy MIS)
+        //     Sample a direction toward the infinite light, cast a shadow
+        //     ray, and accumulate with power-heuristic weight against the
+        //     BSDF strategy.  Only active in MIS mode (nee_mode == 2).
+        // ----------------------------------------------------------------
+        if (hdri && hdri->width > 0 && nee_mode == 2) {
+            const float xi1 = rng_next(rng_state);
+            const float xi2 = rng_next(rng_state);
+            float pdf_L;
+            const Vec3 wi_L = env_light_sample_dir(hdri, env_importance, xi1, xi2, pdf_L);
+            const float NdotL = fmaxf(dot(N, wi_L), 0.0f);
+            if (NdotL > 1e-6f && pdf_L > 1e-10f) {
+                Ray shadowEnvRay(hitRecord.p + N * RT_EPS, wi_L);
+                HitRecord shadowEnvHit; shadowEnvHit.hit = false;
+                SearchBVH(numTriangles, shadowEnvRay, nodes, aabbs, triangles, shadowEnvHit);
+                if (!shadowEnvHit.hit) {
+                    const Vec3  Le    = env_light_eval(hdri, wi_L);
+                    const Vec3  f     = EvaluateBRDF(hitRecord, Vo, wi_L);
+                    const float pdf_B = BRDFSamplingPdf(hitRecord, Vo, wi_L, diffuse_bounce);
+                    const float w_L   = power_heuristic(pdf_L, pdf_B);
+                    radiance = radiance + throughput * Le * f * (NdotL / pdf_L) * w_L;
                 }
             }
         }

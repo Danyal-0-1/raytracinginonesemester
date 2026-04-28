@@ -11,6 +11,7 @@
 #include "texture.h"
 #include "medium.h"
 #include "vec2.h"
+#include "LightJsonParser.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -203,6 +204,105 @@ static bool loadRawScalarField(const std::string& path,
     return false;
 }
 
+// ============================================================
+// EnvImportanceMaps — host-side owner for the 2D CDF used by
+// env_light_sample_dir / env_light_pdf in query.h.
+// Built from the float HDR data using sampleHDRI's UV convention
+// (u = atan2(y,x), sin-linear z → same texels as sampleHDRI).
+// ============================================================
+struct EnvImportanceMaps {
+    std::vector<float> row_cdf_data;            // [H+1]
+    std::vector<float> col_cdf_data;            // [H*(W+1)]
+    std::vector<float> pmf_data;                // [W*H]
+    EnvImportanceData  view;                    // POD view into the above
+};
+
+static EnvImportanceMaps BuildEnvImportance(const HDRTextureData& hdri, float az_rot) {
+    EnvImportanceMaps result;
+    if (!hdri.data || hdri.width <= 0 || hdri.height <= 0) return result;
+
+    const int W = hdri.width, H = hdri.height;
+    result.pmf_data.assign(static_cast<size_t>(W) * static_cast<size_t>(H), 0.0f);
+    result.row_cdf_data.assign(static_cast<size_t>(H) + 1u, 0.0f);
+    result.col_cdf_data.assign(static_cast<size_t>(H) * static_cast<size_t>(W + 1), 0.0f);
+
+    // For sampleHDRI's UV convention:
+    //   image row y → v_img = (y+0.5)/H (image-space, row 0 = zenith)
+    //   v_in = 1 - v_img
+    //   z    = sin(π·(v_in − 0.5))
+    //   sin_theta = |cos(π·(v_in − 0.5))| = sqrt(1−z²)
+    // The sin_theta factor makes the CDF importance proportional to solid angle.
+    for (int y = 0; y < H; ++y) {
+        const float v_in      = 1.0f - (static_cast<float>(y) + 0.5f) / static_cast<float>(H);
+        const float sin_theta = std::fabsf(std::cosf(3.14159265359f * (v_in - 0.5f)));
+
+        const int row_off = y * (W + 1);
+        result.col_cdf_data[static_cast<size_t>(row_off)] = 0.0f;
+        float row_sum = 0.0f;
+
+        for (int x = 0; x < W; ++x) {
+            const int idx = (y * W + x) * 3;
+            const float r = hdri.data[idx];
+            const float g = hdri.data[idx + 1];
+            const float b = hdri.data[idx + 2];
+            // BT.709 luminance of the linear-HDR texel
+            const float lum    = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+            const float weight = std::fmaxf(0.0f, lum) * sin_theta;
+
+            result.pmf_data[static_cast<size_t>(y) * static_cast<size_t>(W)
+                            + static_cast<size_t>(x)] = weight;
+            row_sum += weight;
+            result.col_cdf_data[static_cast<size_t>(row_off + x + 1)] = row_sum;
+        }
+
+        // Normalise conditional column CDF for this row
+        if (row_sum > 0.0f) {
+            const float inv = 1.0f / row_sum;
+            for (int x = 1; x <= W; ++x)
+                result.col_cdf_data[static_cast<size_t>(row_off + x)] *= inv;
+        } else {
+            for (int x = 0; x <= W; ++x)
+                result.col_cdf_data[static_cast<size_t>(row_off + x)] =
+                    static_cast<float>(x) / static_cast<float>(W);
+        }
+
+        result.row_cdf_data[static_cast<size_t>(y + 1)] =
+            result.row_cdf_data[static_cast<size_t>(y)] + row_sum;
+    }
+
+    // Normalise marginal row CDF and PMF
+    const float total = result.row_cdf_data[static_cast<size_t>(H)];
+    if (total > 0.0f) {
+        const float inv = 1.0f / total;
+        for (float& v : result.pmf_data)    v *= inv;
+        for (float& v : result.row_cdf_data) v *= inv;
+        result.row_cdf_data[0]                         = 0.0f;
+        result.row_cdf_data[static_cast<size_t>(H)]    = 1.0f;
+    } else {
+        // All-black HDR: uniform fallback
+        const float uni = 1.0f / static_cast<float>(W * H);
+        std::fill(result.pmf_data.begin(), result.pmf_data.end(), uni);
+        for (int y2 = 0; y2 <= H; ++y2)
+            result.row_cdf_data[static_cast<size_t>(y2)] =
+                static_cast<float>(y2) / static_cast<float>(H);
+        for (int y2 = 0; y2 < H; ++y2) {
+            const int ro = y2 * (W + 1);
+            for (int x = 0; x <= W; ++x)
+                result.col_cdf_data[static_cast<size_t>(ro + x)] =
+                    static_cast<float>(x) / static_cast<float>(W);
+        }
+    }
+
+    result.view.width   = W;
+    result.view.height  = H;
+    result.view.valid   = true;
+    result.view.az_rot  = az_rot;
+    result.view.row_cdf = result.row_cdf_data.data();
+    result.view.col_cdf = result.col_cdf_data.data();
+    result.view.pmf     = result.pmf_data.data();
+    return result;
+}
+
 int main(int argc, char** argv)
 {
     using vec3 = Vec3;
@@ -245,6 +345,7 @@ int main(int argc, char** argv)
     bool has_scene = false;
     std::string scene_base_dir = ".";
     std::string scene_project_dir = ".";
+    std::string scene_json_path;   // saved for ParseTopLevelLights re-parse
     auto file_exists = [](const std::string& p) {
         std::ifstream f(p);
         return static_cast<bool>(f);
@@ -274,6 +375,7 @@ int main(int argc, char** argv)
                 return 1;
             }
             has_scene = true;
+            scene_json_path = first;
             scene_base_dir = SceneIO::dirname(first);
             scene_project_dir = SceneIO::dirname(SceneIO::dirname(scene_base_dir));
             for (const auto& obj : scene.objects) {
@@ -734,9 +836,12 @@ int main(int argc, char** argv)
 
             // Build a device-side HDRTextureData struct pointing to device pixels
             HDRTextureData dev_hdri;
-            dev_hdri.width  = hdri_owner->width;
-            dev_hdri.height = hdri_owner->height;
-            dev_hdri.data   = d_hdri_pixels;
+            dev_hdri.width     = hdri_owner->width;
+            dev_hdri.height    = hdri_owner->height;
+            dev_hdri.data      = d_hdri_pixels;
+            dev_hdri.tint      = scene.environment.tint;
+            dev_hdri.intensity = scene.environment.map_intensity;
+            dev_hdri.az_rot    = scene.environment.map_rotation_deg / 360.0f;
 
             CHECK_CUDA((cudaMalloc(&d_hdri, sizeof(HDRTextureData))), true);
             CHECK_CUDA((cudaMemcpy(d_hdri, &dev_hdri,
@@ -747,6 +852,59 @@ int main(int argc, char** argv)
 #else
     MeshView h_mesh = globalMesh.getView();
     bvh.calculateAABBs(h_mesh, bvhState.AABBs);
+
+    HDRTexture*    h_hdri_owner = nullptr;
+    HDRTextureData h_hdri_data{};
+    if (!scene.sky_hdri_path.empty()) {
+        h_hdri_owner = LoadHDRTexture(scene.sky_hdri_path);
+        if (h_hdri_owner) {
+            h_hdri_data           = h_hdri_owner->sampled;
+            h_hdri_data.tint      = scene.environment.tint;
+            h_hdri_data.intensity = scene.environment.map_intensity;
+            h_hdri_data.az_rot    = scene.environment.map_rotation_deg / 360.0f;
+        }
+    }
+
+    // Wire the GPU path az_rot too (if GPU build sets dev_hdri, update it here)
+    // For the GPU path this variable is unused; the GPU gets d_hdri (already uploaded).
+
+    // Build 2D importance distribution from float HDR for map-based sampling.
+    // ParseTopLevelLights (the polymorphic ILight path) is called here to wire
+    // EnvironmentLight/LightFactory/LightJsonParser into the runtime pipeline.
+    EnvImportanceMaps env_imp_maps;
+    {
+        // Wire polymorphic light path: parse top-level lights[] to get ILight objects.
+        // Their parameters (enabled, tint, intensity, rotation) were already applied to
+        // scene.environment during scene load; the ILight objects are used here for
+        // validation and to confirm the factory/registration path is exercised at runtime.
+        std::vector<std::unique_ptr<ILight>> ilights;
+        if (!scene_json_path.empty()) {
+            std::ifstream jf(scene_json_path);
+            if (jf) {
+                std::string json_text((std::istreambuf_iterator<char>(jf)),
+                                       std::istreambuf_iterator<char>());
+                SceneIO::JsonValue root;
+                std::string perr;
+                if (SceneIO::parse_json(json_text, root, &perr)) {
+                    LightParseSummary summary = ParseTopLevelLights(root, ilights);
+                    if (summary.loaded > 0 || summary.failed > 0) {
+                        printf("[Lighting]   ILight path: %d loaded, %d failed, %d skipped\n",
+                               summary.loaded, summary.failed, summary.skipped);
+                    }
+                }
+            }
+        }
+
+        // Build CDF from float HDR (uses sampleHDRI UV convention for consistency).
+        if (h_hdri_data.width > 0) {
+            const float az = scene.environment.map_rotation_deg / 360.0f;
+            env_imp_maps = BuildEnvImportance(h_hdri_data, az);
+            printf("[Lighting]   env importance map: %dx%d pixels, az_rot=%.4f\n",
+                   env_imp_maps.view.width, env_imp_maps.view.height, az);
+        }
+    }
+    const EnvImportanceData* h_env_imp =
+        (env_imp_maps.view.valid ? &env_imp_maps.view : nullptr);
 #endif
 
     AABB SceneBoundingBox;
@@ -800,13 +958,40 @@ int main(int argc, char** argv)
     Camera cam = has_scene ? scene.camera : Camera();
     std::vector<Light> render_lights = scene.lights;
     {
-        std::vector<Light> point_only;
+        std::vector<Light> supported_lights;
         for (const auto& l : render_lights) {
-            if (l.type == 0) point_only.push_back(l);
+            if (l.type == 0 || l.type == 2) supported_lights.push_back(l);
         }
-        render_lights = std::move(point_only);
+        render_lights = std::move(supported_lights);
     }
     const int num_lights = static_cast<int>(render_lights.size());
+
+    // ---- Runtime lighting summary ----
+    {
+        int n_dir = 0, n_point = 0;
+        for (const auto& l : render_lights) {
+            if (l.type == 2) ++n_dir;
+            else if (l.type == 0) ++n_point;
+        }
+        printf("[Lighting] %d active lights  (%d directional, %d point)\n",
+               num_lights, n_dir, n_point);
+        for (const auto& l : render_lights) {
+            if (l.type == 2) {
+                printf("[Lighting]   sun  dir=(%.3f,%.3f,%.3f)  tint=(%.2f,%.2f,%.2f)  intensity=%.3f\n",
+                       l.direction.x, l.direction.y, l.direction.z,
+                       l.color.x, l.color.y, l.color.z, l.intensity);
+            }
+        }
+        if (!scene.sky_hdri_path.empty()) {
+            printf("[Lighting]   hdri path=%s\n", scene.sky_hdri_path.c_str());
+            printf("[Lighting]   hdri tint=(%.2f,%.2f,%.2f)  intensity=%.3f\n",
+                   scene.environment.tint.x, scene.environment.tint.y, scene.environment.tint.z,
+                   scene.environment.map_intensity);
+        } else {
+            printf("[Lighting]   no HDRI — using miss color (%.2f,%.2f,%.2f)\n",
+                   scene.miss_color.x, scene.miss_color.y, scene.miss_color.z);
+        }
+    }
 
     // ---- Emissive triangle list (rebuildable) ----
     std::vector<EmissiveTriInfo> h_emissiveTris;
@@ -819,28 +1004,21 @@ int main(int argc, char** argv)
         h_emissiveCDF.clear();
         totalEmissiveArea = 0.0f;
         const int nm = static_cast<int>(objectMaterials.size());
-        std::vector<Triangle> tmpTris(P);
-        for (size_t ti = 0; ti < P; ++ti) {
-            const uint32_t i0 = globalMesh.indices[ti * 3 + 0];
-            const uint32_t i1 = globalMesh.indices[ti * 3 + 1];
-            const uint32_t i2 = globalMesh.indices[ti * 3 + 2];
-            Vec3 n0 = make_vec3(0,0,0), n1 = make_vec3(0,0,0), n2 = make_vec3(0,0,0);
-            if (!globalMesh.normals.empty()) {
-                n0 = globalMesh.normals[i0];
-                n1 = globalMesh.normals[i1];
-                n2 = globalMesh.normals[i2];
-            }
-            tmpTris[ti] = Triangle(globalMesh.positions[i0], globalMesh.positions[i1],
-                                   globalMesh.positions[i2], n0, n1, n2);
-        }
         for (size_t ti = 0; ti < P; ++ti) {
             const int objId = globalMesh.triangleObjIds[ti];
             if (objId < 0 || objId >= nm) continue;
             const Vec3& em = objectMaterials[objId].emission;
             if (em.x <= 0.0f && em.y <= 0.0f && em.z <= 0.0f) continue;
-            const Triangle& tri = tmpTris[ti];
-            Vec3 e1 = tri.v1 - tri.v0;
-            Vec3 e2 = tri.v2 - tri.v0;
+
+            const uint32_t i0 = globalMesh.indices[ti * 3 + 0];
+            const uint32_t i1 = globalMesh.indices[ti * 3 + 1];
+            const uint32_t i2 = globalMesh.indices[ti * 3 + 2];
+            const Vec3& v0 = globalMesh.positions[i0];
+            const Vec3& v1 = globalMesh.positions[i1];
+            const Vec3& v2 = globalMesh.positions[i2];
+
+            Vec3 e1 = v1 - v0;
+            Vec3 e2 = v2 - v0;
             Vec3 cr = cross(e1, e2);
             float triArea = 0.5f * sqrtf(dot(cr, cr));
             if (triArea < 1e-12f) continue;
@@ -1266,7 +1444,8 @@ int main(int argc, char** argv)
                objectMediaList.data(), num_media,
                allTextureData.data(), numTextures,
                volumeRegionsList.data(), numVolumeRegions,
-               /*hdri=*/nullptr, use_bdpt);
+               /*hdri=*/(h_hdri_data.width > 0 ? &h_hdri_data : nullptr), use_bdpt,
+               /*env_importance=*/h_env_imp);
         auto end_render = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> ms_render = end_render - start_render;
         printf("CPU Render Time: %.3f ms\n", ms_render.count());
@@ -1304,6 +1483,9 @@ int main(int argc, char** argv)
     for (auto* p : d_volumeFlamePtrs) { if (p) cudaFree(p); }
     if (d_textures) cudaFree(d_textures);
     for (auto* p : d_texPixelPtrs) { if (p) cudaFree(p); }
+    if (d_hdri_pixels) cudaFree(d_hdri_pixels);
+    if (d_hdri)        cudaFree(d_hdri);
+    delete hdri_owner;
 #endif
 
     return 0;

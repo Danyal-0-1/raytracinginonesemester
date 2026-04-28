@@ -1,2 +1,3 @@
 build/
-experiments/
+experiments/.DS_Store
+MC-RayTracer/build_gpu/

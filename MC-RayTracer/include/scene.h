@@ -14,6 +14,7 @@
 #include "material.h"
 #include "medium.h"
 #include "volume_common.h"
+#include "environment.h"
 
 struct SceneSettings {
     int max_depth = 1;
@@ -25,7 +26,7 @@ struct SceneSettings {
 struct Light {
     Vec3 position     = make_vec3(0.0f, 0.0f, 0.0f);
     Vec3 color        = make_vec3(1.0f, 1.0f, 1.0f);
-    int  intensity    = 1;
+    float intensity   = 1.0f;
 
     int  type         = 0;   // 0 = point, 1 = area, 2 = directional (sun)
     // type 2: direction points TOWARD the light (normalized sun direction)
@@ -138,6 +139,7 @@ struct Scene {
     Camera camera;
     Vec3 miss_color = make_vec3(0.0f, 0.0f, 0.0f);
     std::string sky_hdri_path;   // optional equirectangular HDR sky map
+    Environment environment;
     std::vector<Light> lights;
     std::vector<SceneObject> objects;
     std::vector<VolumeRegion> volumes;  // NEW: spatial volume regions
@@ -462,6 +464,89 @@ inline void parse_volume_density(const JsonValue& medObj, VolumeRegion& vol) {
     }
 }
 
+inline void parse_environment_block(const JsonValue& envObj, Environment& env, std::string& sky_hdri_path) {
+    const JsonValue* v = nullptr;
+
+    if (json_get(envObj, "enabled", &v) && v->type == JsonValue::Type::Bool)
+        env.enabled = v->b;
+
+    if (json_get(envObj, "preset", &v) && v->type == JsonValue::Type::String) {
+        const EnvironmentPreset p = EnvironmentPresetFromString(v->str.c_str());
+        ApplyEnvironmentPreset(env, p);
+    }
+
+    if (json_get(envObj, "hdri_path", &v) && v->type == JsonValue::Type::String)
+        sky_hdri_path = v->str;
+
+    if (json_get(envObj, "use_physical_sky", &v) && v->type == JsonValue::Type::Bool)
+        env.use_physical_sky = v->b;
+    if (json_get(envObj, "sun_dir", &v)) json_as_vec3(*v, env.sun_dir);
+    if (json_get(envObj, "sun_intensity", &v) && v->type == JsonValue::Type::Number)
+        env.sun_intensity = static_cast<float>(v->num);
+    if (json_get(envObj, "sun_tint", &v)) json_as_vec3(*v, env.sun_tint);
+    if (json_get(envObj, "sun_angular_radius_deg", &v) && v->type == JsonValue::Type::Number)
+        env.sun_angular_radius_deg = static_cast<float>(v->num);
+
+    if (json_get(envObj, "rayleigh_strength", &v) && v->type == JsonValue::Type::Number)
+        env.rayleigh_strength = static_cast<float>(v->num);
+    if (json_get(envObj, "mie_strength", &v) && v->type == JsonValue::Type::Number)
+        env.mie_strength = static_cast<float>(v->num);
+    if (json_get(envObj, "mie_g", &v) && v->type == JsonValue::Type::Number)
+        env.mie_g = static_cast<float>(v->num);
+    if (json_get(envObj, "turbidity", &v) && v->type == JsonValue::Type::Number)
+        env.turbidity = static_cast<float>(v->num);
+    if (json_get(envObj, "sky_intensity", &v) && v->type == JsonValue::Type::Number)
+        env.sky_intensity = static_cast<float>(v->num);
+    if (json_get(envObj, "atmosphere_height_km", &v) && v->type == JsonValue::Type::Number)
+        env.atmosphere_height_km = static_cast<float>(v->num);
+    if (json_get(envObj, "rayleigh_scale_height_km", &v) && v->type == JsonValue::Type::Number)
+        env.rayleigh_scale_height_km = static_cast<float>(v->num);
+    if (json_get(envObj, "mie_scale_height_km", &v) && v->type == JsonValue::Type::Number)
+        env.mie_scale_height_km = static_cast<float>(v->num);
+    if (json_get(envObj, "view_samples", &v) && v->type == JsonValue::Type::Number)
+        env.view_samples = static_cast<int>(v->num);
+    if (json_get(envObj, "light_samples", &v) && v->type == JsonValue::Type::Number)
+        env.light_samples = static_cast<int>(v->num);
+    if (json_get(envObj, "camera_altitude_m", &v) && v->type == JsonValue::Type::Number)
+        env.camera_altitude_m = static_cast<float>(v->num);
+
+    if (json_get(envObj, "warm_scatter", &v) && v->type == JsonValue::Type::Number)
+        env.warm_scatter = static_cast<float>(v->num);
+    if (json_get(envObj, "horizon_falloff", &v) && v->type == JsonValue::Type::Number)
+        env.horizon_falloff = static_cast<float>(v->num);
+    if (json_get(envObj, "horizon_strength", &v) && v->type == JsonValue::Type::Number)
+        env.horizon_strength = static_cast<float>(v->num);
+    if (json_get(envObj, "horizon_tint", &v)) json_as_vec3(*v, env.horizon_tint);
+    if (json_get(envObj, "tint", &v)) json_as_vec3(*v, env.tint);
+    if (json_get(envObj, "ground_color", &v)) json_as_vec3(*v, env.ground_color);
+    if (json_get(envObj, "ground_intensity", &v) && v->type == JsonValue::Type::Number)
+        env.ground_intensity = static_cast<float>(v->num);
+    if (json_get(envObj, "use_ground_hemisphere", &v) && v->type == JsonValue::Type::Bool)
+        env.use_ground_hemisphere = v->b;
+
+    if (json_get(envObj, "moon_enabled", &v) && v->type == JsonValue::Type::Bool)
+        env.moon_enabled = v->b;
+    if (json_get(envObj, "moon_dir", &v)) json_as_vec3(*v, env.moon_dir);
+    if (json_get(envObj, "moon_intensity", &v) && v->type == JsonValue::Type::Number)
+        env.moon_intensity = static_cast<float>(v->num);
+    if (json_get(envObj, "star_intensity", &v) && v->type == JsonValue::Type::Number)
+        env.star_intensity = static_cast<float>(v->num);
+    if (json_get(envObj, "star_density", &v) && v->type == JsonValue::Type::Number)
+        env.star_density = static_cast<float>(v->num);
+    if (json_get(envObj, "star_threshold", &v) && v->type == JsonValue::Type::Number)
+        env.star_threshold = static_cast<float>(v->num);
+
+    if (json_get(envObj, "tone_mapping_enabled", &v) && v->type == JsonValue::Type::Bool)
+        env.tone_mapping_enabled = v->b;
+    if (json_get(envObj, "exposure", &v) && v->type == JsonValue::Type::Number)
+        env.exposure = static_cast<float>(v->num);
+    if (json_get(envObj, "debug_mode", &v) && v->type == JsonValue::Type::Number)
+        env.debug_mode = static_cast<EnvironmentDebugMode>(static_cast<int>(v->num));
+
+    env.sun_dir  = env_safe_normalize(env.sun_dir,  make_vec3(0.0f, 1.0f, 0.0f));
+    env.moon_dir = env_safe_normalize(env.moon_dir, make_vec3(0.0f, 0.0f, 1.0f));
+}
+
 inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
     if (root.type != JsonValue::Type::Object) {
         if (err) *err = "Root is not an object";
@@ -503,6 +588,12 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
     if (json_get(root, "sky_hdri", &sky_hdri) &&
         sky_hdri->type == JsonValue::Type::String) {
         scene.sky_hdri_path = sky_hdri->str;
+    }
+
+    const JsonValue* environment = nullptr;
+    if (json_get(root, "environment", &environment) &&
+        environment->type == JsonValue::Type::Object) {
+        parse_environment_block(*environment, scene.environment, scene.sky_hdri_path);
     }
 
     const JsonValue* camera = nullptr;
@@ -555,19 +646,24 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
         }
     }
 
-    auto parse_one_light = [](const JsonValue& item) -> Light {
+    auto parse_one_light = [](const JsonValue& item, Light& out) -> bool {
         Light lc;
         const JsonValue* v = nullptr;
+
         if (json_get(item, "position", &v)) json_as_vec3(*v, lc.position);
         if (json_get(item, "color",    &v)) json_as_vec3(*v, lc.color);
         if (json_get(item, "intensity", &v) && v->type == JsonValue::Type::Number)
-            lc.intensity = static_cast<int>(v->num);
+            lc.intensity = static_cast<float>(v->num);
 
+        std::string light_type = "point";
         const JsonValue* ltype = nullptr;
-        if (json_get(item, "light_type", &ltype) &&
-            ltype->type == JsonValue::Type::String &&
-            ltype->str == "directional") {
+        if (json_get(item, "light_type", &ltype) && ltype->type == JsonValue::Type::String) {
+            light_type = ltype->str;
+        } else if (json_get(item, "type", &ltype) && ltype->type == JsonValue::Type::String) {
+            light_type = ltype->str;
+        }
 
+        if (light_type == "directional") {
             lc.type = 2;
             if (json_get(item, "direction", &v)) {
                 json_as_vec3(*v, lc.direction);
@@ -581,10 +677,11 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
                     lc.direction.z /= len;
                 }
             }
-        } else if (json_get(item, "light_type", &ltype) &&
-            ltype->type == JsonValue::Type::String &&
-            ltype->str == "area") {
+            out = lc;
+            return true;
+        }
 
+        if (light_type == "area") {
             lc.type = 1;
             if (json_get(item, "emission", &v)) json_as_vec3(*v, lc.emission);
 
@@ -617,8 +714,18 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
                 lc.light_normal = cr * (1.0f / crLen);
                 lc.area = crLen * 4.0f;
             }
+            out = lc;
+            return true;
         }
-        return lc;
+
+        if (light_type == "point") {
+            lc.type = 0;
+            out = lc;
+            return true;
+        }
+
+        // Unknown/unhandled type: caller decides what to do.
+        return false;
     };
 
     scene.lights.clear();
@@ -626,13 +733,49 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
     if (json_get(root, "lights", &lights) && lights->type == JsonValue::Type::Array) {
         for (const auto& item : lights->arr) {
             if (item.type != JsonValue::Type::Object) continue;
-            scene.lights.push_back(parse_one_light(item));
+            const JsonValue* type_v = nullptr;
+            std::string light_type;
+            if (json_get(item, "light_type", &type_v) && type_v->type == JsonValue::Type::String) {
+                light_type = type_v->str;
+            } else if (json_get(item, "type", &type_v) && type_v->type == JsonValue::Type::String) {
+                light_type = type_v->str;
+            }
+
+            if (light_type == "environment_light") {
+                const JsonValue* v = nullptr;
+                // "enabled" here gates only the HDRI map, not the whole environment.
+                // Sun fallback (and scene.environment.enabled) stays active regardless.
+                bool hdri_enabled = true;
+                if (json_get(item, "enabled", &v) && v->type == JsonValue::Type::Bool)
+                    hdri_enabled = v->b;
+                if (hdri_enabled && json_get(item, "hdri_path", &v) && v->type == JsonValue::Type::String)
+                    scene.sky_hdri_path = v->str;
+                if (json_get(item, "intensity_scale", &v) && v->type == JsonValue::Type::Number)
+                    scene.environment.map_intensity = static_cast<float>(v->num);
+                if (json_get(item, "tint", &v))
+                    json_as_vec3(*v, scene.environment.tint);
+                if (json_get(item, "rotation_euler_deg", &v) &&
+                    v->type == JsonValue::Type::Array && v->arr.size() == 3 &&
+                    v->arr[2].type == JsonValue::Type::Number) {
+                    // Environment supports a single lat-long yaw rotation.
+                    scene.environment.map_rotation_deg = static_cast<float>(v->arr[2].num);
+                }
+                continue;
+            }
+
+            Light parsed_light;
+            if (parse_one_light(item, parsed_light)) {
+                scene.lights.push_back(parsed_light);
+            }
         }
     }
     if (scene.lights.empty()) {
         const JsonValue* light = nullptr;
         if (json_get(root, "light", &light) && light->type == JsonValue::Type::Object) {
-            scene.lights.push_back(parse_one_light(*light));
+            Light parsed_light;
+            if (parse_one_light(*light, parsed_light)) {
+                scene.lights.push_back(parsed_light);
+            }
         }
     }
 
@@ -686,6 +829,9 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
             // NEW: texture path overrides in scene JSON
             if (json_get(*material, "diffuse_texture", &v) && v->type == JsonValue::Type::String)
                 obj.diffuse_tex_path = v->str;
+            if (obj.diffuse_tex_path.empty() &&
+                json_get(*material, "albedo_map", &v) && v->type == JsonValue::Type::String)
+                obj.diffuse_tex_path = v->str;
             if (json_get(*material, "normal_texture", &v) && v->type == JsonValue::Type::String)
                 obj.normal_tex_path = v->str;
             if (json_get(*material, "alpha_texture", &v) && v->type == JsonValue::Type::String)
@@ -730,6 +876,23 @@ inline bool parse_scene(const JsonValue& root, Scene& scene, std::string* err) {
         if (err) *err = "Scene contains no valid objects or volumes";
         return false;
     }
+
+    // Environment fallback: if no directional light exists, synthesize a directional sun light.
+    // This keeps environment sun controls (sun_dir/sun_tint/sun_intensity) active even when
+    // the scene also contains point/area lights.
+    bool has_directional = false;
+    for (const auto& l : scene.lights) {
+        if (l.type == 2) { has_directional = true; break; }
+    }
+    if (!has_directional && scene.environment.enabled) {
+        Light sun;
+        sun.type = 2;
+        sun.direction = env_safe_normalize(scene.environment.sun_dir, make_vec3(0.0f, 1.0f, 0.0f));
+        sun.color = scene.environment.sun_tint;
+        sun.intensity = std::max(0.0f, scene.environment.sun_intensity);
+        scene.lights.push_back(sun);
+    }
+
     return true;
 }
 

@@ -146,9 +146,13 @@ extern std::unordered_map<std::string, std::unique_ptr<Texture>> g_textureCache;
 // RGB floats in linear light (as loaded by stbi_loadf).
 // ============================================================
 struct HDRTextureData {
-    int          width  = 0;
-    int          height = 0;
-    const float* data   = nullptr;   // device pointer after upload
+    int          width     = 0;
+    int          height    = 0;
+    const float* data      = nullptr;   // device pointer after upload
+    Vec3         tint      = make_vec3(1.0f, 1.0f, 1.0f);
+    float        intensity = 1.0f;
+    // Azimuth rotation in [0,1) fraction of 360°.  Must match EnvImportanceData::az_rot.
+    float        az_rot    = 0.0f;
 
     // Bilinear sample at (u, v) in [0,1]^2, linear-light RGB.
     // u wraps; v is clamped (no wrap at poles).
@@ -192,6 +196,29 @@ struct HDRTextureData {
         Vec3 bottom = c01 * (1.0f - dx) + c11 * dx;
         return top * (1.0f - dy) + bottom * dy;
     }
+};
+
+// ============================================================
+// EnvImportanceData — GPU-compatible 2D CDF for environment-light
+// importance sampling.  Built on the CPU from the float HDR pixels
+// using sampleHDRI's UV convention (u=atan2(y,x), sin-linear z).
+// Raw pointers point to host memory for CPU builds; callers are
+// responsible for uploading if the GPU path ever needs them.
+// When valid==false or any pointer is null, callers fall back to
+// uniform-sphere sampling (PDF = 1/4π).
+// ============================================================
+struct EnvImportanceData {
+    int   width   = 0;
+    int   height  = 0;
+    bool  valid   = false;
+    // Horizontal rotation [0,1) = fraction of 360°. Must equal HDRTextureData::az_rot.
+    float az_rot  = 0.0f;
+    // [height+1] cumulative marginal row probabilities, row_cdf[0]=0, row_cdf[height]=1
+    const float* row_cdf = nullptr;
+    // [height*(width+1)] per-row conditional CDFs, each row normalised to [0,1]
+    const float* col_cdf = nullptr;
+    // [width*height] normalised probability masses (for PDF lookup)
+    const float* pmf     = nullptr;
 };
 
 // Host-side HDR texture owner (not uploaded until main.cu does so)

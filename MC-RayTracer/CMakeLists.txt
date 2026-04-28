@@ -4,11 +4,20 @@ project(RayTracerHW2)
 # Build option: Defaults to CPU (OFF)
 option(ENABLE_GPU "Enable CUDA implementation" OFF)
 
+# Light system source files (CPU-only, no CUDA)
+set(LIGHT_SOURCES
+    src/EnvironmentLight.cpp
+    src/LightFactory.cpp
+    src/LightJsonParser.cpp
+    src/EnvironmentLightRegistration.cpp
+)
+
 # Define source files
 set(SOURCES
     src/main.cu
     include/bvh.cu
     include/query.cu
+    ${LIGHT_SOURCES}
 )
 
 # Include directories
@@ -35,7 +44,7 @@ if(ENABLE_GPU)
     target_link_libraries(render PRIVATE cuda stdc++ m)
 
     # Ensure C++11 or higher (CUDA usually supports C++14/17 in recent versions)
-    set_target_properties(render PROPERTIES CUDA_STANDARD 14)
+    set_target_properties(render PROPERTIES CUDA_STANDARD 17)
 
 else()
     message(STATUS "Building for CPU (Default)")
@@ -52,5 +61,5 @@ else()
         target_compile_options(render PRIVATE -x c++)
     endif()
     
-    set_target_properties(render PROPERTIES CXX_STANDARD 14)
+    set_target_properties(render PROPERTIES CXX_STANDARD 17)
 endif()

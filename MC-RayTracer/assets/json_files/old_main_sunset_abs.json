@@ -1,0 +1,108 @@
+{
+  "settings": {
+    "max_bounces": 4,
+    "spp": 10
+  },
+  "miss_color": [0.38, 0.30, 0.22],
+  "camera": {
+    "focal_length_mm": 24.0,
+    "pixel_width": 800,
+    "pixel_height": 600,
+    "position": [0.0, -2.0, 0.3],
+    "look_at": [0.0, 0.0, 0.2],
+    "up": [0.0, 0.0, 1.0]
+  },
+  "environment": {
+    "enabled": true,
+    "preset": "custom",
+    "use_physical_sky": false,
+    "hdri_path": "./assets/meshes/sky.hdr",
+
+    "sun_dir": [0.976, 0.091, 0.055],
+    "sun_intensity": 6.5,
+    "sun_tint": [1.0, 0.68, 0.50],
+    "sun_angular_radius_deg": 0.38,
+
+    "rayleigh_strength": 4.80,
+    "mie_strength": 4.20,
+    "mie_g": 0.92,
+    "turbidity": 6.5,
+    "sky_intensity": 1.55,
+
+    "atmosphere_height_km": 60.0,
+    "rayleigh_scale_height_km": 8.0,
+    "mie_scale_height_km": 6.5,
+    "view_samples": 16,
+    "light_samples": 8,
+    "camera_altitude_m": 1.0,
+
+    "warm_scatter": 2.6,
+    "horizon_falloff": 10.0,
+    "horizon_strength": 0.28,
+    "horizon_tint": [1.65, 0.62, 0.24],
+    "tint": [1.06, 0.97, 0.90],
+
+    "ground_color": [0.52, 0.22, 0.16],
+    "ground_intensity": 0.32,
+
+    "moon_enabled": false,
+    "moon_dir": [0.0, 0.0, 1.0],
+    "moon_intensity": 0.0,
+    "star_intensity": 0.0,
+    "star_density": 1.0,
+    "star_threshold": 0.9975,
+
+    "tone_mapping_enabled": true,
+    "exposure": 1.0,
+
+    "debug_mode": 0
+  },
+  "lights": [
+    {
+      "type": "environment_light",
+      "enabled": true,
+      "hdri_path": "./assets/meshes/sky.hdr",
+      "intensity_scale": 1.0,
+      "tint": [1.05, 0.95, 0.86],
+      "importance_sampling_resolution": 512,
+      "rotation_euler_deg": [0.0, 0.0, 0.0]
+    }
+  ],
+  "scene": [
+    {
+      "name": "old_main",
+      "type": "mesh",
+      "path": "/Users/danyalkhorami/Desktop/project/spring2026/projects/raytracing/lastFinalproject/raytracinginonesemester/MC-RayTracer/assets/meshes/old_main.obj",
+      "transform": {
+        "position": [0.0, 0.0, 0.3],
+        "rotation": [90.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "material": {
+        "albedo": [0.7, 0.65, 0.6],
+        "kd": 0.85,
+        "ks": 0.05,
+        "shininess": 8,
+        "kr": 0.0,
+        "albedo_map": "./assets/meshes/old_main.png"
+      }
+    },
+    {
+      "name": "ground",
+      "type": "mesh",
+      "path": "./assets/meshes/plane_5x5.obj",
+      "transform": {
+        "position": [0.0, 0.0, -0.2],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [20.0, 20.0, 1.0]
+      },
+      "material": {
+        "albedo": [0.10, 0.20, 0.08],
+        "kd": 0.9,
+        "ks": 0.02,
+        "shininess": 2,
+        "kr": 0.0
+      }
+    }
+  ]
+}

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <random>
+#include <cmath>
 
 #ifdef __CUDACC__
     #include <cuda_runtime.h>
@@ -48,6 +49,12 @@
 
 #else
     #define HYBRID_FUNC
+#endif
+
+#ifndef __CUDACC__
+HYBRID_FUNC inline float rsqrtf(float x) {
+    return 1.0f / std::sqrt(x);
+}
 #endif
 
 

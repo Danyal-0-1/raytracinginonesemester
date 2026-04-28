@@ -187,7 +187,8 @@ void render(
     int numVolumeRegions,
     const HDRTextureData* __restrict__ hdri,
     // BDPT integrator switch. Default false => existing PT path is unchanged.
-    bool use_bdpt)
+    bool use_bdpt,
+    const EnvImportanceData* __restrict__ env_importance)
 {
 #ifdef __CUDACC__
     dim3 tile_grid((W + BLOCK_X - 1) / BLOCK_X, (H + BLOCK_Y - 1) / BLOCK_Y, 1);
@@ -298,7 +299,8 @@ void render(
                         objectMedia, numObjectMedia,
                         textures, numTextures,
                         volumeRegions, numVolumeRegions,
-                        hdri
+                        hdri,
+                        env_importance
                     );
                 }
 
