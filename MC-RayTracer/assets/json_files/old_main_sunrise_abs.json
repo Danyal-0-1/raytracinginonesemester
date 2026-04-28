@@ -1,7 +1,7 @@
 {
   "settings": {
     "max_bounces": 4,
-    "spp": 20
+    "spp": 10
   },
   "miss_color": [0.22, 0.30, 0.45],
   "camera": {
@@ -16,7 +16,7 @@
     "enabled": true,
     "preset": "custom",
     "use_physical_sky": false,
-    "hdri_enabled": false,
+    "hdri_enabled": true,
     "hdri_path": "./assets/meshes/sky_hdr_sunrise.hdr",
 
     "sun_dir": [-0.976, 0.091, 0.055],
